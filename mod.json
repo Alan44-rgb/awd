@@ -3,22 +3,22 @@
   "gd": {
     "win": "2.2081"
   },
-  "version": "v4.9.0",
+  "version": "v4.9.1",
   "id": "ech8.predictive-input-buffer",
   "name": "Predictive Input Buffer",
   "developer": "Ech8",
-  "description": "Buffer predictivo de clics y sueltas en ticks. F6 abre el menu; indicador ocultable y diagnostico de riesgos por modo.",
+  "description": "Buffer predictivo de clics y sueltas en ticks. Shift+F12 abre el menu; indicador ocultable y diagnostico de riesgos por modo.",
   "settings": {
     "enabled": {
       "type": "bool",
       "name": "Activar buffer",
-      "description": "F6 abre el menu para configurar o desactivar la ayuda.",
+      "description": "Shift+F12 abre el menu para configurar o desactivar la ayuda.",
       "default": true
     },
     "max-delay": {
       "type": "int",
       "name": "Limite al pulsar (ticks)",
-      "description": "Retraso maximo de un clic temprano. 0 desactiva solo la correccion de pulsaciones. F6 abre un menu con presets y ajustes.",
+      "description": "Ventana de busqueda de clics tempranos; prueba 1 tick adicional. 0 desactiva solo la correccion de pulsaciones. Shift+F12 abre un menu con presets y ajustes.",
       "default": 8,
       "min": 0,
       "max": 32
@@ -26,7 +26,7 @@
     "release-ticks": {
       "type": "int",
       "name": "Limite al soltar (ticks)",
-      "description": "Cuantos ticks puede mantener pulsado si detecta una suelta temprana peligrosa. Solo espera cuando predice una mejora. 0 desactiva solo esta accion.",
+      "description": "Cuantos ticks puede mantener pulsado si detecta una suelta temprana peligrosa. Prueba tambien 1 tick adicional; solo espera cuando predice una mejora. 0 desactiva solo esta accion.",
       "default": 4,
       "min": 0,
       "max": 32
@@ -34,7 +34,7 @@
     "show-overlay": {
       "type": "bool",
       "name": "Mostrar indicador en el nivel",
-      "description": "Muestra el ultimo riesgo o correccion. Puedes ocultarlo y seguir abriendo el menu con F6.",
+      "description": "Muestra el ultimo riesgo o correccion. Puedes ocultarlo y seguir abriendo el menu con Shift+F12.",
       "default": true
     },
     "ground-horizon": {

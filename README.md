@@ -1,16 +1,16 @@
-# Predictive Input Buffer — Ech8 — v4.9.0
+# Predictive Input Buffer — Ech8 — v4.9.1
 
 Windows, Geometry Dash 2.2081 y Geode 5.11.2.
 
 ## Uso
 
-F6 abre o cierra el menu dentro de GD. Si lo abres durante una partida, el
+Shift+F12 abre o cierra el menu dentro de GD. Si lo abres durante una partida, el
 juego se pausa; cierra el panel y pulsa Reanudar para seguir.
 
 - Ajusta Pulsar y Soltar por separado, siempre en ticks (0 a 32).
 - Los botones +/- cambian un tick; los presets permiten 1, 2, 4, 8, 16 o 32.
 - 0 desactiva solo esa accion. Activar/Desactivar controla todo el buffer.
-- Mostrar/Ocultar oculta el indicador del nivel. F6 permite volver al menu.
+- Mostrar/Ocultar oculta el indicador del nivel. Shift+F12 permite volver al menu.
 - Como funciona explica el comportamiento y sus limites.
 
 Los ajustes se guardan. Al actualizar, el limite de clics que ya habias elegido
@@ -21,7 +21,10 @@ release-frames ya no se utiliza.
 
 Al pulsar o soltar, simula un jugador oculto. Si la trayectoria inmediata
 colisiona, prueba retrasos de 1 tick hasta el limite y usa una correccion
-favorable. Si el input inmediato es seguro, no aplica retraso.
+favorable. Prueba despues un tick adicional para entregar el clic o la suelta
+un tick mas tarde. Si esa prueba empeora, es incierta o agota el tiempo,
+conserva la correccion ya validada. El total puede ser limite + 1 tick.
+Si el input inmediato es seguro, no aplica retraso.
 
 Cube, ball, UFO y robot reconocen el aterrizaje de la accion. La simulacion
 suelta el boton al aterrizar para no inventar un segundo salto al mantenerlo
@@ -56,7 +59,7 @@ niveles ni el aspecto del menu en todas las resoluciones.
 ## Compilacion y pruebas
 
 GitHub Actions ejecuta primero buffer_core_tests.cpp: escenarios de cube,
-sueltas, cambio de obstaculo, presupuesto agotado y 1056 combinaciones de
+sueltas, cambio de obstaculo, presupuesto agotado y 2112 combinaciones de
 ventanas de ticks. Usa el mismo selector que el mod. Despues compila el paquete
 .geode para Windows. El artefacto se llama Predictive-Input-Buffer-Windows.
 
