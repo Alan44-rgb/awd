@@ -1,39 +1,53 @@
-# Predictive Input Buffer (recreación para Geode)
+# Predictive Input Buffer — Ech8
 
-Recreación del mod **Predictive Input Buffer** a partir del log de consola de la v4.7.
-No es el código original: es una reimplementación del comportamiento observado.
+Buffer adaptativo para Windows, GD 2.2081 y Geode 5.11.2.
 
-## Comportamiento
+## Que hace
 
-- Los inputs (press / release) se encolan y se aplican **N ticks después** (1 tick = 1/240 s).
-- **F6** cicla las etapas dentro del nivel:
+Al pulsar o soltar el salto, simula un jugador oculto con ese input. Si la
+trayectoria inmediata choca, prueba retrasos de 1 tick hasta el limite elegido.
+Usa el menor retraso cuya trayectoria completa no choque dentro del horizonte.
+Si el input inmediato es seguro, no encuentra una correccion o agota su tiempo
+de calculo, el input pasa inmediatamente. No altera la muerte del jugador real.
 
-| Etapa | Ticks (todo) | Ticks (wave) |
-|-------|--------------|--------------|
-| 1     | 2            | 2            |
-| 2     | 4            | 4            |
-| 3     | 8            | 8            |
-| 4     | 16           | 8            |
-| OFF   | input crudo  | input crudo  |
+F6 cambia el limite: 1, 2, 4, 8, 16, OFF. Comienza con 2 ticks; tambien se puede
+cambiar en los ajustes de Geode. El limite no es una latencia fija. Los clics y
+sueltas que llegan durante una correccion conservan su orden y duracion.
 
-## Cómo obtener el archivo `.geode` (la forma fácil, sin instalar nada)
+## Limites de la prediccion
 
-1. Crea un repositorio nuevo en GitHub y sube todo el contenido de esta carpeta.
-2. Ve a la pestaña **Actions** → se ejecuta *Build Geode Mod* (o lánzalo con *Run workflow*).
-3. Al terminar (unos minutos), descarga el artefacto **Build Output**: dentro está `tuusuario.predictive-input-buffer.geode`.
-4. Copia ese archivo a `...\Geometry Dash\geode\mods\` y abre el juego.
+La simulacion contempla geometria y peligros en su posicion actual. No simula
+el nivel entero ni futuras acciones del usuario; no garantiza evitar la muerte.
+Para evitar decisiones basadas en estados incompletos, el input pasa sin ayuda
+en dual, platformer, spider, dash o si la trayectoria toca portales, orbes, pads
+y otros objetos interactivos. Los obstaculos que se mueven pueden causar
+predicciones incorrectas. No se ha validado la sincronizacion con CBF u otros
+mods que cambian la fisica o el momento de los inputs.
 
-## Compilar en local (Windows)
+La prediccion de suelo es de 120 ticks y la de vuelo de 32 por defecto. Se pueden
+ajustar junto con el presupuesto de calculo. La consola de Geode muestra cada
+correccion aplicada; ese mensaje indica una prediccion favorable, no prueba que
+el jugador haya sobrevivido en la partida real.
 
-1. Instala la CLI de Geode: https://docs.geode-sdk.org/getting-started/geode-cli
-2. `geode sdk install` y `geode sdk install-binaries`
-3. Dentro de esta carpeta: `geode build`
-4. El `.geode` aparece en `build/`.
+## Compilacion
 
-## Antes de publicar
+GitHub Actions > Build Geode Mod. Descargar el artefacto
+Predictive-Input-Buffer-Windows y extraer `ech8.predictive-input-buffer.geode`.
+Con el juego cerrado, reemplazar la version anterior en `geode/mods`.
+Desactivar otras copias de este buffer para que dos mods no procesen el mismo
+input. F6 muestra el limite activo. El juego debe probarse con un nivel y unas
+pulsaciones concretos para evaluar la calidad de las predicciones.
 
-- Cambia `tuusuario` / `TuUsuario` en `mod.json` por tu usuario.
-- El código usa `GJBaseGameLayer::handleButton` y `processCommands` para GD **2.2081**.
-  Si una versión nueva de Geode cambia las firmas (por ejemplo `dispatchKeyboardMSG`), ajústalas.
-- Código **sin probar en el juego**: puede requerir retoques de sincronización de ticks.
-- Si vas a compartirlo, respeta la licencia/permiso del autor del mod original.
+## Cambios respecto a v4.7
+
+- Se sustituye el retraso fijo por prediccion de trayectoria.
+- Las sueltas tambien se evalúan.
+- Las simulaciones usan un jugador separado y restauran GJGameState.
+- Los reinicios descartan los inputs pendientes; desactivar reconcilia el boton.
+- El identificador usa minusculas; se mantiene el autor Ech8.
+- La compilacion usa la version estable declarada en mod.json.
+
+Referencias tecnicas consultadas: bindings oficiales de geode-sdk/bindings
+para 2.2081 y el enfoque de jugador fantasma mostrado en el proyecto publico
+fraudian/Predictive-Input-Buffer. Esta implementacion reemplaza el main.cpp
+simplificado que habia en awd.

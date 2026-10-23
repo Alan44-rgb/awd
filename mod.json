@@ -1,19 +1,50 @@
 {
-	"geode": "5.11.2",
-	"gd": {
-		"win": "2.2081"
-	},
-	"version": "v4.7.0",
-	"id": "Ech8.predictive-input-buffer",
-	"name": "Predictive Input Buffer",
-	"developer": "Ech8",
-	"description": "Buffer de inputs con etapas ciclables con F6 (2/4/8/16 ticks, con valor distinto para wave).",
-	"settings": {
-		"verbose-log": {
-			"type": "bool",
-			"name": "Log detallado",
-			"description": "Imprime en la consola de Geode cada input retrasado.",
-			"default": true
-		}
-	}
+  "geode": "5.11.2",
+  "gd": { "win": "2.2081" },
+  "version": "v4.8.0",
+  "id": "ech8.predictive-input-buffer",
+  "name": "Predictive Input Buffer",
+  "developer": "Ech8",
+  "description": "Corrige clics y sueltas tempranos solo si una trayectoria retrasada evita una colision prevista. F6 cambia el limite.",
+  "settings": {
+    "max-delay": {
+      "type": "int",
+      "name": "Maximo de ticks de correccion",
+      "description": "Limite, no retraso fijo. 0 desactiva. F6: 1, 2, 4, 8, 16 y OFF. 4 ticks son 1 frame a 60 FPS con fisica de 240 Hz.",
+      "default": 2,
+      "min": 0,
+      "max": 16
+    },
+    "ground-horizon": {
+      "type": "int",
+      "name": "Prediccion de suelo (ticks)",
+      "description": "Distancia temporal de prediccion para cube, ball, UFO y robot. Debe alcanzar la zona de aterrizaje.",
+      "default": 120,
+      "min": 32,
+      "max": 200
+    },
+    "flight-horizon": {
+      "type": "int",
+      "name": "Prediccion de vuelo (ticks)",
+      "description": "Horizonte para wave, ship y swing. Muy largo puede incluir un obstaculo que requiere tu siguiente clic.",
+      "default": 32,
+      "min": 12,
+      "max": 80
+    },
+    "prediction-budget": {
+      "type": "float",
+      "name": "Tiempo maximo de prediccion (ms)",
+      "description": "Si se agota, el clic pasa sin correccion. Un limite mayor puede causar tirones.",
+      "default": 6.0,
+      "min": 1.0,
+      "max": 15.0
+    },
+    "verbose-log": {
+      "type": "bool",
+      "name": "Log de correcciones",
+      "description": "Muestra que clic o suelta se retraso y cuantos ticks. Una prediccion favorable no garantiza sobrevivir.",
+      "default": true
+    }
+  },
+  "links": { "source": "https://github.com/Alan44-rgb/awd" }
 }
