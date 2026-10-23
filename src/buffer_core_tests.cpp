@@ -48,6 +48,29 @@ int main() {
             require(decision.delay == (required <= window ? required : 0), "all tick windows obey exact bound");
         }
     }
+    for (int window = 1; window <= 32; ++window) {
+        for (int required = 1; required <= 33; ++required) {
+            auto corrected = chooseWithExtraTick(window, [&](int delay, uintptr_t) {
+                return delay >= required ? Outcome{K::Clear, 60} : Outcome{K::Collision, 8, 101};
+            });
+            require(corrected.delay == (required <= window ? required + 1 : 0),
+                "corrected press/release executes exactly one tick later");
+        }
+    }
+    auto raw = chooseWithExtraTick(4, [](int delay, uintptr_t) {
+        require(delay == 0, "safe input gets no extra tick probe");
+        return Outcome{K::Clear, 60};
+    });
+    require(raw.delay == 0, "safe input is never shifted");
+    for (auto result : {K::Collision, K::Unknown, K::Timeout}) {
+        auto fallback = chooseWithExtraTick(1, [&](int delay, uintptr_t) {
+            if (delay == 0) return Outcome{K::Collision, 8, 101};
+            if (delay == 1) return Outcome{K::Clear, 60};
+            require(delay == 2, "one tick setting tests exactly two ticks");
+            return Outcome{result, 9, 101};
+        });
+        require(fallback.delay == 1, "bad extra tick retains validated correction");
+    }
     require(ticks(-1) == 0 && ticks(99) == 32, "tick limits are clamped");
-    std::cout << "PASS: cube/release/obstacle/budget scenarios and 1056 tick-window cases\n";
+    std::cout << "PASS: cube/release/obstacle/budget scenarios and 2112 tick-window cases\n";
 }

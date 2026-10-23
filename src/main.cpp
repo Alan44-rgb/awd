@@ -269,7 +269,7 @@ namespace pib {
             }
             if (!indicator) return;
             indicator->setVisible(Mod::get()->getSettingValue<bool>("show-overlay"));
-            indicator->setString(fmt::format("PIB {} | Click {}t / Release {}t | F6\n{}",
+            indicator->setString(fmt::format("PIB {} | Click {}t / Release {}t | Shift+F12\n{}",
                 enabled() ? "ON" : "OFF", limit(), releaseLimit(), status).c_str());
         }
 
@@ -415,7 +415,7 @@ namespace pib {
             // afterwards. Surviving while holding forever is not a release save.
             const int modeFloor = p->m_isDart ? 48 : (p->m_isShip || p->m_isSwing ? 64 : 128);
             const int horizon = std::max({configuredHorizon, maximum + 12, modeFloor});
-            lastDecision = core::choose(maximum, [&](int delay, uintptr_t obstacle) {
+            lastDecision = core::chooseWithExtraTick(maximum, [&](int delay, uintptr_t obstacle) {
                 return probe(down, delay, horizon, obstacle);
             });
             baselineWorld.reset();
@@ -605,7 +605,8 @@ namespace pib {
                     "Al <cy>pulsar o soltar</c>, compara tu trayectoria con retrasos de 1 hasta el limite de ticks. "
                     "Solo espera si predice una mejora. Si sueltas pronto, mantiene el boton antes de soltar.\n\n"
                     "Cube, ship, ball, UFO, robot, spider, wave y swing. El indicador explica cada decision. "
-                    "<cy>F6</c> abre o cierra este menu; puedes ocultar el indicador.\n\n"
+                    "Prueba 1 tick adicional en correcciones; si empeora, conserva la anterior. "
+                    "<cy>Shift+F12</c> abre o cierra este menu; puedes ocultar el indicador.\n\n"
                     "No garantiza sobrevivir. Dual, platformer, dash y encuentros con portales/orbes/pads "
                     "pueden pasar sin correccion. Los objetos moviles y otros mods de fisica pueden reducir la precision.\n\n"
                     "Si abriste el menu durante un nivel, cierralo y pulsa Reanudar.", "OK")->show();
@@ -787,10 +788,18 @@ class $modify(AdaptivePlayer, PlayerObject) {
 };
 
 class $modify(AdaptiveKeyboard, CCKeyboardDispatcher) {
+    struct Fields { bool menuKeyConsumed = false; };
     bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
-        if (key == KEY_F6) {
-            if (down && !repeat) pib::toggleMenu();
-            return true;
+        if (key == KEY_F12) {
+            if (down && !repeat && getShiftKeyPressed()) {
+                m_fields->menuKeyConsumed = true;
+                pib::toggleMenu();
+                return true;
+            }
+            if (m_fields->menuKeyConsumed) {
+                if (!down) m_fields->menuKeyConsumed = false;
+                return true;
+            }
         }
         return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
     }
@@ -815,6 +824,6 @@ class $modify(AdaptiveTrail, HardStreak) {
 };
 
 $on_mod(Loaded) {
-    log::info("[PIB] v4.9.0 loaded. Click {} ticks, release {} ticks. F6 opens settings; the indicator can be hidden.",
+    log::info("[PIB] v4.9.1 loaded. Click {} ticks, release {} ticks. Shift+F12 opens settings; the indicator can be hidden.",
         pib::limit(), pib::releaseLimit());
 }

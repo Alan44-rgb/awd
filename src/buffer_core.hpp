@@ -65,4 +65,26 @@ namespace pib::core {
         }
         return decision;
     }
+
+    // Prefer one tick AFTER the first validated correction. Probe that exact
+    // execution time as well; never add an untested delay to the real queue.
+    template <class Probe>
+    Decision chooseWithExtraTick(int maximum, Probe&& probe) {
+        auto decision = choose(maximum, probe);
+        if (!decision.delay) return decision;
+        const int later = decision.delay + 1;
+        const auto candidate = probe(later, decision.original.obstacle);
+        const bool survives = candidate.kind == Kind::Clear || candidate.kind == Kind::Landed;
+        const bool improves = candidate.kind == Kind::Collision &&
+            decision.selected.kind == Kind::Collision &&
+            decision.original.obstacle && candidate.obstacle && candidate.clearedOriginal &&
+            candidate.obstacle != decision.original.obstacle &&
+            candidate.ticks >= decision.original.ticks + std::max(8, 2 * later) &&
+            candidate.ticks >= decision.selected.ticks;
+        if (survives || improves) {
+            decision.delay = later;
+            decision.selected = candidate;
+        }
+        return decision;
+    }
 }
