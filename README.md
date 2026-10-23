@@ -10,7 +10,7 @@ Usa el menor retraso cuya trayectoria completa no choque dentro del horizonte.
 Si el input inmediato es seguro, no encuentra una correccion o agota su tiempo
 de calculo, el input pasa inmediatamente. No altera la muerte del jugador real.
 
-F6 cambia el limite: 1, 2, 4, 8, 16, OFF. Comienza con 2 ticks; tambien se puede
+F6 cambia el limite de las pulsaciones: 1, 2, 4, 8, 16, OFF. Comienza con 2 ticks; tambien se puede
 cambiar en los ajustes de Geode. El limite no es una latencia fija. Los clics y
 sueltas que llegan durante una correccion conservan su orden y duracion.
 
@@ -51,3 +51,21 @@ Referencias tecnicas consultadas: bindings oficiales de geode-sdk/bindings
 para 2.2081 y el enfoque de jugador fantasma mostrado en el proyecto publico
 fraudian/Predictive-Input-Buffer. Esta implementacion reemplaza el main.cpp
 simplificado que habia en awd.
+
+## Sueltas tempranas (v4.8.1)
+
+En los ajustes del mod, **Margen al soltar (frames a 60 FPS)** controla cuanto
+puede mantener pulsado despues de que sueltes fisicamente. Empieza en 1 frame
+(4 ticks). Puedes elegir 2 frames (8 ticks), 4 frames (16 ticks), etc., hasta 8.
+El valor 0 desactiva la busqueda de correcciones de suelta. F6 OFF desactiva
+ambos tipos de correccion; los demas valores de F6 solo cambian las pulsaciones.
+
+Si soltar ahora no predice una colision, suelta de inmediato. Si predice una,
+prueba mantener pulsado 1, 2, 3... ticks y luego soltar; usa el primer retraso
+que supera la comprobacion, sin rebasar el margen. Si ninguna opcion supera la
+prediccion, suelta de inmediato. La consola indica RELEASE, ticks adicionales
+y su equivalencia en frames. Este margen no garantiza sobrevivir.
+
+Los frames de este ajuste siempre son a 60 FPS (1/60 s), aunque la pantalla
+renderice a otra frecuencia. Las limitaciones generales de la prediccion de
+esta version siguen aplicandose.

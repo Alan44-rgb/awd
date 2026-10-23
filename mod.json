@@ -1,7 +1,9 @@
 {
   "geode": "5.11.2",
-  "gd": { "win": "2.2081" },
-  "version": "v4.8.0",
+  "gd": {
+    "win": "2.2081"
+  },
+  "version": "v4.8.1",
   "id": "ech8.predictive-input-buffer",
   "name": "Predictive Input Buffer",
   "developer": "Ech8",
@@ -9,8 +11,8 @@
   "settings": {
     "max-delay": {
       "type": "int",
-      "name": "Maximo de ticks de correccion",
-      "description": "Limite, no retraso fijo. 0 desactiva. F6: 1, 2, 4, 8, 16 y OFF. 4 ticks son 1 frame a 60 FPS con fisica de 240 Hz.",
+      "name": "Maximo de ticks al pulsar (F6)",
+      "description": "Limite para pulsaciones. F6: 1, 2, 4, 8, 16 y OFF. OFF desactiva tambien la correccion de sueltas. El margen de sueltas se configura por separado en frames.",
       "default": 2,
       "min": 0,
       "max": 16
@@ -44,7 +46,17 @@
       "name": "Log de correcciones",
       "description": "Muestra que clic o suelta se retraso y cuantos ticks. Una prediccion favorable no garantiza sobrevivir.",
       "default": true
+    },
+    "release-frames": {
+      "type": "int",
+      "name": "Margen al soltar (frames a 60 FPS)",
+      "description": "Si soltar ahora provoca una colision prevista, puede mantener pulsado hasta este margen y soltar despues. 1 frame = 4 ticks; 2 = 8; 4 = 16. 0 desactiva la busqueda de correcciones de suelta. No es un retraso fijo. F6 OFF desactiva todo.",
+      "default": 1,
+      "min": 0,
+      "max": 8
     }
   },
-  "links": { "source": "https://github.com/Alan44-rgb/awd" }
+  "links": {
+    "source": "https://github.com/Alan44-rgb/awd"
+  }
 }
