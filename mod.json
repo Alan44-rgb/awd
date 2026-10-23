@@ -4,9 +4,9 @@
 		"win": "2.2081"
 	},
 	"version": "v4.7.0",
-	"id": "tuusuario.predictive-input-buffer",
+	"id": "Ech8.predictive-input-buffer",
 	"name": "Predictive Input Buffer",
-	"developer": "TuUsuario",
+	"developer": "Ech8",
 	"description": "Buffer de inputs con etapas ciclables con F6 (2/4/8/16 ticks, con valor distinto para wave).",
 	"settings": {
 		"verbose-log": {
