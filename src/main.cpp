@@ -28,6 +28,187 @@ namespace pib {
         return std::clamp(static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-delay")), 0, 16);
     }
 
+    // Geode exposes renamed fields as anonymous unions, making GJGameState
+    // non-copyable. Copy canonical fields individually, including containers;
+    // never memcpy owning containers or duplicate their allocation pointers.
+#define PIB_STATE_FIELDS(F) \
+        F(m_cameraZoom) \
+        F(m_targetCameraZoom) \
+        F(m_cameraOffset) \
+        F(m_unkPoint1) \
+        F(m_unkPoint2) \
+        F(m_unkPoint3) \
+        F(m_cameraDeltaPosition) \
+        F(m_unkPoint5) \
+        F(m_unkPoint6) \
+        F(m_unkPoint7) \
+        F(m_unkPoint8) \
+        F(m_unkPoint9) \
+        F(m_unkPoint10) \
+        F(m_unkPoint11) \
+        F(m_unkPoint12) \
+        F(m_unkPoint13) \
+        F(m_unkPoint14) \
+        F(m_unkPoint15) \
+        F(m_unkPoint16) \
+        F(m_unkPoint17) \
+        F(m_unkPoint18) \
+        F(m_unkPoint19) \
+        F(m_unkPoint20) \
+        F(m_unkPoint21) \
+        F(m_unkPoint22) \
+        F(m_unkPoint23) \
+        F(m_unkPoint24) \
+        F(m_unkPoint25) \
+        F(m_unkPoint26) \
+        F(m_unkPoint27) \
+        F(m_unkPoint28) \
+        F(m_unkPoint29) \
+        F(m_unkBool1) \
+        F(m_unkInt1) \
+        F(m_unkBool2) \
+        F(m_unkInt2) \
+        F(m_unkBool3) \
+        F(m_unkPoint30) \
+        F(m_middleGroundOffsetY) \
+        F(m_unkInt3) \
+        F(m_unkInt4) \
+        F(m_unkBool4) \
+        F(m_unkBool5) \
+        F(m_cameraPadding) \
+        F(m_cameraEasing) \
+        F(m_unkInt5) \
+        F(m_unkInt6) \
+        F(m_unkInt7) \
+        F(m_unkInt8) \
+        F(m_unkInt9) \
+        F(m_unkInt10) \
+        F(m_lastModeHeight) \
+        F(m_lastCameraZoom) \
+        F(m_unkUint1) \
+        F(m_portalY) \
+        F(m_unkBool6) \
+        F(m_gravityRelated) \
+        F(m_unkInt12) \
+        F(m_unkInt13) \
+        F(m_unkInt14) \
+        F(m_unkInt15) \
+        F(m_unkBool7) \
+        F(m_isFreeMode) \
+        F(m_disableCameraGridSnap) \
+        F(m_backgroundSpeedX) \
+        F(m_backgroundSpeedY) \
+        F(m_middlegroundSpeedX) \
+        F(m_middlegroundSpeedY) \
+        F(m_cameraAngle) \
+        F(m_targetCameraAngle) \
+        F(m_playerStreakBlend) \
+        F(m_timeWarp) \
+        F(m_queuedTimeWarp) \
+        F(m_timeWarpRelated) \
+        F(m_currentChannel) \
+        F(m_rotateChannel) \
+        F(m_spawnChannelRelated0) \
+        F(m_spawnChannelRelated1) \
+        F(m_totalTime) \
+        F(m_levelTime) \
+        F(m_unkDouble3) \
+        F(m_commandIndex) \
+        F(m_unkUint3) \
+        F(m_currentProgress) \
+        F(m_unkUint4) \
+        F(m_unkUint5) \
+        F(m_unkUint6) \
+        F(m_unkUint7) \
+        F(m_lastActivatedPortal1) \
+        F(m_lastActivatedPortal2) \
+        F(m_cameraPosition) \
+        F(m_isFlipped) \
+        F(m_levelFlipProgress) \
+        F(m_inSecondHalfOfFlipAnimation) \
+        F(m_isFlipping) \
+        F(m_isDualMode) \
+        F(m_dualAnimationProgress) \
+        F(m_tweenActions) \
+        F(m_cameraEdgeValue0) \
+        F(m_cameraEdgeValue1) \
+        F(m_cameraEdgeValue2) \
+        F(m_cameraEdgeValue3) \
+        F(m_gameObjectPhysics) \
+        F(m_unkVecFloat1) \
+        F(m_unkUint10) \
+        F(m_unkUint11) \
+        F(m_unkUint12) \
+        F(m_cameraStepDiff) \
+        F(m_backgroundWidth) \
+        F(m_timeModRelated) \
+        F(m_timeModRelated2) \
+        F(m_activatedObjectIDs) \
+        F(m_unkUint13) \
+        F(m_unkPoint32) \
+        F(m_cameraLastPosition) \
+        F(m_unkBool20) \
+        F(m_unkBool21) \
+        F(m_audioOnDeath) \
+        F(m_respawnTime) \
+        F(m_noDeathSFX) \
+        F(m_cameraShakeEnabled) \
+        F(m_cameraShakeDuration) \
+        F(m_cameraShakeStrength) \
+        F(m_cameraShakeInterval) \
+        F(m_lastShakeTime) \
+        F(m_unkPoint34) \
+        F(m_dualRelated) \
+        F(m_stateObjects) \
+        F(m_unkMapPairGJGameEventIntVectorEventTriggerInstance) \
+        F(m_unkMapPairGJGameEventIntInt) \
+        F(m_enterEffectInstanceVectors) \
+        F(m_exitEffectInstanceVectors) \
+        F(m_enterChannelMap) \
+        F(m_exitChannelMap) \
+        F(m_moveEffectInstances) \
+        F(m_rotateEffectInstances) \
+        F(m_scaleEffectInstances) \
+        F(m_fadeEffectInstances) \
+        F(m_tintEffectInstances) \
+        F(m_unsortedAreaEffects) \
+        F(m_unkBool27) \
+        F(m_advanceFollowInstances) \
+        F(m_dynamicMoveActions) \
+        F(m_dynamicRotateActions) \
+        F(m_instantExitStaticCameraX) \
+        F(m_instantExitStaticCameraY) \
+        F(m_unkUint17) \
+        F(m_unkUMap8) \
+        F(m_proximityVolumeRelated) \
+        F(m_songChannelStates) \
+        F(m_songTriggerStateVectors) \
+        F(m_sfxTriggerStates) \
+        F(m_unkBool30) \
+        F(m_background) \
+        F(m_ground) \
+        F(m_middleground) \
+        F(m_unlinkDualGravity) \
+        F(m_points) \
+        F(m_hasObtainedPoints) \
+        F(m_pauseCounter) \
+        F(m_pauseBufferTimer)
+    struct GameStateSnapshot {
+#define PIB_DECLARE(name) decltype(GJGameState::name) name;
+        PIB_STATE_FIELDS(PIB_DECLARE)
+#undef PIB_DECLARE
+        explicit GameStateSnapshot(GJGameState const& source) {
+#define PIB_CAPTURE(name) name = source.name;
+            PIB_STATE_FIELDS(PIB_CAPTURE)
+#undef PIB_CAPTURE
+        }
+        void restore(GJGameState& target) const {
+#define PIB_RESTORE(name) target.name = name;
+            PIB_STATE_FIELDS(PIB_RESTORE)
+#undef PIB_RESTORE
+        }
+    };
+#undef PIB_STATE_FIELDS
     struct Predictor {
         PlayLayer* owner;
         Ref<PlayerObject> ghost;
@@ -76,14 +257,14 @@ namespace pib {
 
         struct ProbeScope {
             Predictor& predictor;
-            GJGameState saved;
+            GameStateSnapshot saved;
             explicit ProbeScope(Predictor& p) : predictor(p), saved(p.owner->m_gameState) {
                 p.simulating = true;
                 p.collision = false;
                 p.uncertain = false;
             }
             ~ProbeScope() {
-                predictor.owner->m_gameState = saved;
+                saved.restore(predictor.owner->m_gameState);
                 predictor.simulating = false;
             }
         };
@@ -224,6 +405,11 @@ namespace pib {
 class $modify(AdaptivePlayLayer, PlayLayer) {
     struct Fields { std::unique_ptr<pib::Predictor> predictor; };
 
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("PlayLayer::destroyPlayer", -1000000);
+        (void)self.setHookPriority("PlayLayer::playEndAnimationToPos", -1000000);
+    }
+
     bool init(GJGameLevel* level, bool replay, bool skipObjects) {
         if (!PlayLayer::init(level, replay, skipObjects)) return false;
         m_fields->predictor = std::make_unique<pib::Predictor>(this);
@@ -258,9 +444,17 @@ class $modify(AdaptivePlayLayer, PlayLayer) {
 };
 
 class $modify(AdaptiveBaseLayer, GJBaseGameLayer) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("GJBaseGameLayer::canBeActivatedByPlayer", -1000000);
+        (void)self.setHookPriority("GJBaseGameLayer::collisionCheckObjects", -1000000);
+        (void)self.setHookPriority("GJBaseGameLayer::gameEventTriggered", -1000000);
+        (void)self.setHookPriority("GJBaseGameLayer::playerTouchedRing", -1000000);
+        (void)self.setHookPriority("GJBaseGameLayer::playerWillSwitchMode", -1000000);
+        (void)self.setHookPriority("GJBaseGameLayer::flipGravity", -1000000);
+    }
     void handleButton(bool down, int button, bool player1) {
         auto* p = pib::active;
-        if (p && this == p->owner && !p->simulating && !p->injecting &&
+        if (p && static_cast<GJBaseGameLayer*>(this) == static_cast<GJBaseGameLayer*>(p->owner) && !p->simulating && !p->injecting &&
             button == 1 && player1 && p->intercept(down)) return;
         GJBaseGameLayer::handleButton(down, button, player1);
     }
