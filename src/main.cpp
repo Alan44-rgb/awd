@@ -19,6 +19,7 @@
 #include <deque>
 #include <fstream>
 #include <filesystem>
+#include <string_view>
 #include <memory>
 
 using namespace geode::prelude;
@@ -349,6 +350,8 @@ namespace pib {
             tick = 0;
             tickTime = 0.0;
             lastCorrectionTick = -1.0;
+            currentInputID = 0;
+            currentDelay = 0;
             physicalDown = false;
         }
 
@@ -532,6 +535,7 @@ namespace pib {
                 record("CANCELADO", event.id, event.down, event.delay, "sincronizar_estado");
             pending.clear();
             shift = 0;
+            currentDelay = 0;
             if (hadPending && owner->m_player1 && !owner->m_player1->m_isDead)
                 fire(physicalDown);
         }
@@ -816,7 +820,7 @@ class $modify(AdaptivePlayLayer, PlayLayer) {
             pib::active->killedBy = object;
             return;
         }
-        if (m_fields->predictor) {
+        if (m_fields->predictor && !player->m_isDead) {
             m_fields->predictor->record("MUERTE", 0, false, 0, "jugador_real");
             m_fields->predictor->clear();
         }
