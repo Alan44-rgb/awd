@@ -3,57 +3,69 @@
   "gd": {
     "win": "2.2081"
   },
-  "version": "v4.8.1",
+  "version": "v4.9.0",
   "id": "ech8.predictive-input-buffer",
   "name": "Predictive Input Buffer",
   "developer": "Ech8",
-  "description": "Corrige clics y sueltas tempranos solo si una trayectoria retrasada evita una colision prevista. F6 cambia el limite.",
+  "description": "Buffer predictivo de clics y sueltas en ticks. F6 abre el menu; indicador ocultable y diagnostico de riesgos por modo.",
   "settings": {
+    "enabled": {
+      "type": "bool",
+      "name": "Activar buffer",
+      "description": "F6 abre el menu para configurar o desactivar la ayuda.",
+      "default": true
+    },
     "max-delay": {
       "type": "int",
-      "name": "Maximo de ticks al pulsar (F6)",
-      "description": "Limite para pulsaciones. F6: 1, 2, 4, 8, 16 y OFF. OFF desactiva tambien la correccion de sueltas. El margen de sueltas se configura por separado en frames.",
-      "default": 2,
+      "name": "Limite al pulsar (ticks)",
+      "description": "Retraso maximo de un clic temprano. 0 desactiva solo la correccion de pulsaciones. F6 abre un menu con presets y ajustes.",
+      "default": 8,
       "min": 0,
-      "max": 16
+      "max": 32
+    },
+    "release-ticks": {
+      "type": "int",
+      "name": "Limite al soltar (ticks)",
+      "description": "Cuantos ticks puede mantener pulsado si detecta una suelta temprana peligrosa. Solo espera cuando predice una mejora. 0 desactiva solo esta accion.",
+      "default": 4,
+      "min": 0,
+      "max": 32
+    },
+    "show-overlay": {
+      "type": "bool",
+      "name": "Mostrar indicador en el nivel",
+      "description": "Muestra el ultimo riesgo o correccion. Puedes ocultarlo y seguir abriendo el menu con F6.",
+      "default": true
     },
     "ground-horizon": {
       "type": "int",
-      "name": "Prediccion de suelo (ticks)",
-      "description": "Distancia temporal de prediccion para cube, ball, UFO y robot. Debe alcanzar la zona de aterrizaje.",
-      "default": 120,
-      "min": 32,
-      "max": 200
+      "name": "Horizonte de suelo (ticks)",
+      "description": "Alcance de la prediccion en cube, ball, UFO, robot y spider. Detecta el aterrizaje para no confundir el salto con el siguiente.",
+      "default": 160,
+      "min": 64,
+      "max": 240
     },
     "flight-horizon": {
       "type": "int",
-      "name": "Prediccion de vuelo (ticks)",
-      "description": "Horizonte para wave, ship y swing. Muy largo puede incluir un obstaculo que requiere tu siguiente clic.",
-      "default": 32,
-      "min": 12,
-      "max": 80
+      "name": "Horizonte de vuelo (ticks)",
+      "description": "Alcance para wave, ship y swing. Se aplica un minimo por modo para detectar el peligro a tiempo.",
+      "default": 64,
+      "min": 24,
+      "max": 120
     },
     "prediction-budget": {
       "type": "float",
-      "name": "Tiempo maximo de prediccion (ms)",
-      "description": "Si se agota, el clic pasa sin correccion. Un limite mayor puede causar tirones.",
-      "default": 6.0,
-      "min": 1.0,
-      "max": 15.0
+      "name": "Tiempo maximo de busqueda (ms)",
+      "description": "Tiempo disponible tras preparar la simulacion. Si se agota sin encontrar una mejora, se aplica el input original. Aumentarlo puede producir tirones.",
+      "default": 12.0,
+      "min": 2.0,
+      "max": 25.0
     },
     "verbose-log": {
       "type": "bool",
-      "name": "Log de correcciones",
-      "description": "Muestra que clic o suelta se retraso y cuantos ticks. Una prediccion favorable no garantiza sobrevivir.",
+      "name": "Diagnostico de inputs",
+      "description": "Indica modo, riesgo detectado, correccion o motivo por el que el input paso sin espera.",
       "default": true
-    },
-    "release-frames": {
-      "type": "int",
-      "name": "Margen al soltar (frames a 60 FPS)",
-      "description": "Si soltar ahora provoca una colision prevista, puede mantener pulsado hasta este margen y soltar despues. 1 frame = 4 ticks; 2 = 8; 4 = 16. 0 desactiva la busqueda de correcciones de suelta. No es un retraso fijo. F6 OFF desactiva todo.",
-      "default": 1,
-      "min": 0,
-      "max": 8
     }
   },
   "links": {

@@ -1,71 +1,64 @@
-# Predictive Input Buffer — Ech8
+# Predictive Input Buffer — Ech8 — v4.9.0
 
-Buffer adaptativo para Windows, GD 2.2081 y Geode 5.11.2.
+Windows, Geometry Dash 2.2081 y Geode 5.11.2.
 
-## Que hace
+## Uso
 
-Al pulsar o soltar el salto, simula un jugador oculto con ese input. Si la
-trayectoria inmediata choca, prueba retrasos de 1 tick hasta el limite elegido.
-Usa el menor retraso cuya trayectoria completa no choque dentro del horizonte.
-Si el input inmediato es seguro, no encuentra una correccion o agota su tiempo
-de calculo, el input pasa inmediatamente. No altera la muerte del jugador real.
+F6 abre o cierra el menu dentro de GD. Si lo abres durante una partida, el
+juego se pausa; cierra el panel y pulsa Reanudar para seguir.
 
-F6 cambia el limite de las pulsaciones: 1, 2, 4, 8, 16, OFF. Comienza con 2 ticks; tambien se puede
-cambiar en los ajustes de Geode. El limite no es una latencia fija. Los clics y
-sueltas que llegan durante una correccion conservan su orden y duracion.
+- Ajusta Pulsar y Soltar por separado, siempre en ticks (0 a 32).
+- Los botones +/- cambian un tick; los presets permiten 1, 2, 4, 8, 16 o 32.
+- 0 desactiva solo esa accion. Activar/Desactivar controla todo el buffer.
+- Mostrar/Ocultar oculta el indicador del nivel. F6 permite volver al menu.
+- Como funciona explica el comportamiento y sus limites.
 
-## Limites de la prediccion
+Los ajustes se guardan. Al actualizar, el limite de clics que ya habias elegido
+se conserva. El nuevo limite de sueltas empieza en 4 ticks. El ajuste antiguo
+release-frames ya no se utiliza.
 
-La simulacion contempla geometria y peligros en su posicion actual. No simula
-el nivel entero ni futuras acciones del usuario; no garantiza evitar la muerte.
-Para evitar decisiones basadas en estados incompletos, el input pasa sin ayuda
-en dual, platformer, spider, dash o si la trayectoria toca portales, orbes, pads
-y otros objetos interactivos. Los obstaculos que se mueven pueden causar
-predicciones incorrectas. No se ha validado la sincronizacion con CBF u otros
-mods que cambian la fisica o el momento de los inputs.
+## Prediccion y mejoras de cube
 
-La prediccion de suelo es de 120 ticks y la de vuelo de 32 por defecto. Se pueden
-ajustar junto con el presupuesto de calculo. La consola de Geode muestra cada
-correccion aplicada; ese mensaje indica una prediccion favorable, no prueba que
-el jugador haya sobrevivido en la partida real.
+Al pulsar o soltar, simula un jugador oculto. Si la trayectoria inmediata
+colisiona, prueba retrasos de 1 tick hasta el limite y usa una correccion
+favorable. Si el input inmediato es seguro, no aplica retraso.
 
-## Compilacion
+Cube, ball, UFO y robot reconocen el aterrizaje de la accion. La simulacion
+suelta el boton al aterrizar para no inventar un segundo salto al mantenerlo
+pulsado para siempre. Comprueba unos ticks sobre la superficie antes de darlo
+por bueno. Spider tambien puede usar la prediccion basica; ship, wave y swing
+usan horizontes adaptados al modo.
 
-GitHub Actions > Build Geode Mod. Descargar el artefacto
-Predictive-Input-Buffer-Windows y extraer `ech8.predictive-input-buffer.geode`.
-Con el juego cerrado, reemplazar la version anterior en `geode/mods`.
-Desactivar otras copias de este buffer para que dos mods no procesen el mismo
-input. F6 muestra el limite activo. El juego debe probarse con un nivel y unas
-pulsaciones concretos para evaluar la calidad de las predicciones.
+Una colision posterior contra el mismo obstaculo no cuenta como mejora. Si un
+retraso supera por completo el obstaculo original y ofrece suficiente margen
+hasta otro peligro diferente, puede elegirse aunque ese peligro posterior
+requiera tu siguiente input. Un candidato no simulable no cancela la busqueda
+de los otros retrasos.
 
-## Cambios respecto a v4.7
+El estado del mundo se captura una vez por busqueda y se restaura tras cada
+prueba. El tiempo de busqueda es configurable. El indicador y el log muestran
+si el input era seguro, el peligro detectado, la correccion, una zona que no se
+puede simular o el agotamiento del tiempo de calculo.
 
-- Se sustituye el retraso fijo por prediccion de trayectoria.
-- Las sueltas tambien se evalúan.
-- Las simulaciones usan un jugador separado y restauran GJGameState.
-- Los reinicios descartan los inputs pendientes; desactivar reconcilia el boton.
-- El identificador usa minusculas; se mantiene el autor Ech8.
-- La compilacion usa la version estable declarada en mod.json.
+## Limites
 
-Referencias tecnicas consultadas: bindings oficiales de geode-sdk/bindings
-para 2.2081 y el enfoque de jugador fantasma mostrado en el proyecto publico
-fraudian/Predictive-Input-Buffer. Esta implementacion reemplaza el main.cpp
-simplificado que habia en awd.
+No es noclip: las muertes del jugador real siguen funcionando. No garantiza
+salvar un input ni representa una simulacion completa del nivel. Dual,
+platformer, dash y encuentros con portales, orbes y pads pueden pasar sin ayuda.
+Los objetos que se mueven, triggers y otros mods que cambian la fisica pueden
+reducir la precision. Los horizontes se expresan en pasos de la fisica normal;
+la sincronizacion con CBF requiere una comprobacion dentro del juego.
 
-## Sueltas tempranas (v4.8.1)
+El comportamiento dentro de un nivel debe probarse con inputs concretos.
+Compilar y pasar las pruebas de decisiones no valida la fisica de todos los
+niveles ni el aspecto del menu en todas las resoluciones.
 
-En los ajustes del mod, **Margen al soltar (frames a 60 FPS)** controla cuanto
-puede mantener pulsado despues de que sueltes fisicamente. Empieza en 1 frame
-(4 ticks). Puedes elegir 2 frames (8 ticks), 4 frames (16 ticks), etc., hasta 8.
-El valor 0 desactiva la busqueda de correcciones de suelta. F6 OFF desactiva
-ambos tipos de correccion; los demas valores de F6 solo cambian las pulsaciones.
+## Compilacion y pruebas
 
-Si soltar ahora no predice una colision, suelta de inmediato. Si predice una,
-prueba mantener pulsado 1, 2, 3... ticks y luego soltar; usa el primer retraso
-que supera la comprobacion, sin rebasar el margen. Si ninguna opcion supera la
-prediccion, suelta de inmediato. La consola indica RELEASE, ticks adicionales
-y su equivalencia en frames. Este margen no garantiza sobrevivir.
+GitHub Actions ejecuta primero buffer_core_tests.cpp: escenarios de cube,
+sueltas, cambio de obstaculo, presupuesto agotado y 1056 combinaciones de
+ventanas de ticks. Usa el mismo selector que el mod. Despues compila el paquete
+.geode para Windows. El artefacto se llama Predictive-Input-Buffer-Windows.
 
-Los frames de este ajuste siempre son a 60 FPS (1/60 s), aunque la pantalla
-renderice a otra frecuencia. Las limitaciones generales de la prediccion de
-esta version siguen aplicandose.
+Reemplaza la version anterior del mismo mod y desactiva otras recreaciones
+para evitar procesar cada input dos veces.
