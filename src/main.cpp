@@ -788,16 +788,16 @@ class $modify(AdaptivePlayer, PlayerObject) {
 };
 
 class $modify(AdaptiveKeyboard, CCKeyboardDispatcher) {
-    struct Fields { bool menuKeyConsumed = false; };
     bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
+        static bool menuKeyConsumed = false;
         if (key == KEY_F12) {
             if (down && !repeat && getShiftKeyPressed()) {
-                m_fields->menuKeyConsumed = true;
+                menuKeyConsumed = true;
                 pib::toggleMenu();
                 return true;
             }
-            if (m_fields->menuKeyConsumed) {
-                if (!down) m_fields->menuKeyConsumed = false;
+            if (menuKeyConsumed) {
+                if (!down) menuKeyConsumed = false;
                 return true;
             }
         }
