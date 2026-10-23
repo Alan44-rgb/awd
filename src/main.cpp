@@ -547,6 +547,7 @@ namespace pib {
             auto* sprite = ButtonSprite::create(text);
             auto* item = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(SettingsMenu::onAction));
             item->setScale(scale);
+            item->m_baseScale = scale;
             item->setPosition({x, y});
             item->setTag(tag);
             m_buttonMenu->addChild(item);
