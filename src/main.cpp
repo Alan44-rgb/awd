@@ -1,122 +1,371 @@
-// Predictive Input Buffer - recreacion basada en el log de la consola (v4.7)
-//
-// Idea: en lugar de aplicar cada input (press/release) al instante, se encola
-// y se aplica N "ticks" fisicos despues. N depende de la etapa activa y de si
-// el jugador esta en modo wave. F6 cicla: STAGE 1 -> 2 -> 3 -> 4 -> OFF.
-//
-// 1 tick = 1/240 s  (4 ticks = 1 frame @ 60fps, igual que en el log original)
-
+// Adaptive early-input buffer for Geometry Dash 2.2081 / Geode 5.11.2.
+// Only a hidden player is simulated. Real collisions and deaths stay enabled.
 #include <Geode/Geode.hpp>
-#include <Geode/modify/GJBaseGameLayer.hpp>
-#include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
+#include <Geode/modify/EffectGameObject.hpp>
+#include <Geode/modify/GJBaseGameLayer.hpp>
+#include <Geode/modify/GameObject.hpp>
+#include <Geode/modify/HardStreak.hpp>
+#include <Geode/modify/PlayLayer.hpp>
+#include <Geode/modify/PlayerObject.hpp>
+#include <Geode/ui/Notification.hpp>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <deque>
+#include <memory>
 
 using namespace geode::prelude;
 
 namespace pib {
-    struct Stage { int all; int wave; };
-    constexpr Stage STAGES[4] = { {2, 2}, {4, 4}, {8, 8}, {16, 8} };
-    constexpr int OFF = 4; // indice 4 = desactivado
+    using Clock = std::chrono::steady_clock;
+    struct Predictor;
+    inline Predictor* active = nullptr;
+    enum class Verdict { Clear, Collision, Unknown };
+    struct Event { uint64_t tick; bool down; };
 
-    inline int g_stage = 0; // arranca en STAGE 1
-
-    inline bool verbose() {
-        return Mod::get()->getSettingValue<bool>("verbose-log");
+    int limit() {
+        return std::clamp(static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-delay")), 0, 16);
     }
 
-    inline void logStage() {
-        if (g_stage == OFF) {
-            log::info("[InputBuffer] F6 Cycle -> STAGE 1: OFF (100% Raw Input)");
-            return;
+    struct Predictor {
+        PlayLayer* owner;
+        Ref<PlayerObject> ghost;
+        Ref<PlayerCheckpoint> checkpoint;
+        std::deque<Event> pending;
+        uint64_t tick = 0;
+        int shift = 0;
+        float step = 0.25f; // PlayerObject uses GD units: one 240 Hz step = 0.25.
+        bool physicalDown = false;
+        bool injecting = false;
+        bool simulating = false;
+        bool collision = false;
+        bool uncertain = false;
+        Clock::time_point deadline;
+
+        explicit Predictor(PlayLayer* layer) : owner(layer) {}
+        ~Predictor() { if (active == this) active = nullptr; }
+
+        void clear() {
+            pending.clear();
+            shift = 0;
+            tick = 0;
+            physicalDown = false;
         }
-        auto s = STAGES[g_stage];
-        log::info(
-            "[InputBuffer] F6 Cycle -> STAGE {}: {} Ticks All | {} Ticks Wave ({:.1f}f @ 60fps)",
-            g_stage + 1, s.all, s.wave, s.all / 4.0f
-        );
+
+        bool supported() const {
+            auto* p = owner->m_player1;
+            return p && !p->m_isDead && !owner->m_isPaused &&
+                !owner->m_isPlatformer && !owner->m_gameState.m_isDualMode &&
+                !p->m_isSpider && !p->m_isDashing;
+        }
+
+        bool prepare() {
+            if (!ghost) {
+                // Use the actual layer pointer; PlayLayer::get() is not reliable in init.
+                ghost = PlayerObject::create(1, 1, owner, owner, true);
+                if (!ghost) return false;
+                owner->m_objectLayer->addChild(ghost.data());
+                ghost->setVisible(false);
+            }
+            if (!checkpoint) checkpoint = PlayerCheckpoint::create();
+            if (!checkpoint) return false;
+            owner->m_player1->saveToCheckpoint(checkpoint.data());
+            return true;
+        }
+
+        struct ProbeScope {
+            Predictor& predictor;
+            GJGameState saved;
+            explicit ProbeScope(Predictor& p) : predictor(p), saved(p.owner->m_gameState) {
+                p.simulating = true;
+                p.collision = false;
+                p.uncertain = false;
+            }
+            ~ProbeScope() {
+                predictor.owner->m_gameState = saved;
+                predictor.simulating = false;
+            }
+        };
+
+        Verdict probe(bool down, int delay, int horizon) {
+            ProbeScope scope(*this);
+            auto* real = owner->m_player1;
+            ghost->copyAttributes(real);
+            ghost->loadFromCheckpoint(checkpoint.data());
+            ghost->setScale(real->getScale());
+            ghost->setContentSize(real->getContentSize());
+            ghost->m_width = real->m_width;
+            ghost->m_height = real->m_height;
+            ghost->m_holdingButtons = real->m_holdingButtons;
+            ghost->m_isDead = false;
+            ghost->setVisible(false);
+
+            // All candidates cover the SAME future interval. A later crash by
+            // itself does not count as a successful correction.
+            for (int i = 0; i < horizon; ++i) {
+                if (Clock::now() >= deadline) return Verdict::Unknown;
+                if (i == delay) {
+                    if (down) ghost->pushButton(PlayerButton::Jump);
+                    else ghost->releaseButton(PlayerButton::Jump);
+                }
+                ghost->update(step);
+                ghost->updateRotation(step);
+                if (uncertain) return Verdict::Unknown;
+                if (collision || ghost->m_isDead) return Verdict::Collision;
+                ghost->m_collisionLogTop->removeAllObjects();
+                ghost->m_collisionLogBottom->removeAllObjects();
+                ghost->m_collisionLogLeft->removeAllObjects();
+                ghost->m_collisionLogRight->removeAllObjects();
+                owner->checkCollisions(ghost.data(), step, false);
+                if (uncertain) return Verdict::Unknown;
+                if (collision || ghost->m_isDead) return Verdict::Collision;
+            }
+            return Verdict::Clear;
+        }
+
+        int chooseDelay(bool down) {
+            const int maximum = limit();
+            if (!maximum || !supported()) return 0;
+            const double budget = Mod::get()->getSettingValue<double>("prediction-budget");
+            deadline = Clock::now() + std::chrono::microseconds(static_cast<int>(budget * 1000));
+            if (!prepare()) return 0;
+            auto* p = owner->m_player1;
+            // A cube jump needs enough lookahead to see its landing. A wave
+            // must normally be steered again much sooner.
+            const int horizon = static_cast<int>(Mod::get()->getSettingValue<int64_t>(
+                p->m_isDart || p->m_isShip || p->m_isSwing ? "flight-horizon" : "ground-horizon"));
+            if (probe(down, 0, horizon) != Verdict::Collision) return 0;
+            for (int delay = 1; delay <= maximum; ++delay) {
+                const auto verdict = probe(down, delay, horizon);
+                if (verdict == Verdict::Clear) return delay;
+                if (verdict == Verdict::Unknown) return 0;
+            }
+            return 0;
+        }
+
+        void fire(bool down) {
+            injecting = true;
+            owner->handleButton(down, 1, true);
+            injecting = false;
+        }
+
+        void flush() {
+            // Reconcile the held state when disabling the buffer or leaving a
+            // supported mode, rather than replaying obsolete presses at once.
+            const bool hadPending = !pending.empty();
+            pending.clear();
+            shift = 0;
+            if (hadPending && owner->m_player1 && !owner->m_player1->m_isDead)
+                fire(physicalDown);
+        }
+
+        bool intercept(bool down) {
+            physicalDown = down;
+            if (!supported() || !limit()) {
+                pending.clear();
+                shift = 0;
+                return false;
+            }
+            if (!pending.empty()) {
+                // Shift the complete tap by the original amount, so a release
+                // cannot overtake its press and short taps keep their duration.
+                pending.push_back({tick + static_cast<uint64_t>(shift), down});
+                return true;
+            }
+            const int delay = chooseDelay(down);
+            if (!delay) return false;
+            shift = delay;
+            pending.push_back({tick + static_cast<uint64_t>(delay), down});
+            if (Mod::get()->getSettingValue<bool>("verbose-log")) {
+                log::info("[PIB] {} delayed {} ticks (limit {}). Immediate path collided; delayed path cleared prediction.",
+                    down ? "PRESS" : "RELEASE", delay, limit());
+            }
+            return true;
+        }
+
+        void beforeStep(float dt) {
+            // Keep time-warp and sub-tick steps in the same units as the game.
+            if (dt > 0.f && dt <= 1.f) step = dt;
+            if (!supported() || !limit()) { flush(); return; }
+            while (!pending.empty() && pending.front().tick <= tick) {
+                const bool down = pending.front().down;
+                pending.pop_front();
+                fire(down);
+            }
+            if (pending.empty()) shift = 0;
+        }
+    };
+
+    bool simulating() { return active && active->simulating; }
+
+    bool solid(GameObjectType type) {
+        return type == GameObjectType::Solid || type == GameObjectType::Slope ||
+            type == GameObjectType::Hazard || type == GameObjectType::AnimatedHazard;
+    }
+
+    bool inert(GameObjectType type) {
+        return type == GameObjectType::Decoration || type == GameObjectType::SecretCoin ||
+            type == GameObjectType::UserCoin || type == GameObjectType::Collectible;
+    }
+
+    void cycle() {
+        constexpr int stages[] = {0, 1, 2, 4, 8, 16};
+        int next = 0;
+        for (int value : stages) if (value > limit()) { next = value; break; }
+        if (active) active->flush();
+        Mod::get()->setSettingValue<int64_t>("max-delay", next);
+        const auto message = next ? fmt::format("Input Buffer: hasta {} ticks", next) : "Input Buffer: OFF";
+        Notification::create(message, NotificationIcon::Info, 1.5f)->show();
+        log::info("[PIB] {}", message);
     }
 }
 
-struct PendingInput {
-    bool down;
-    int button;
-    bool player1;
-    int remaining; // ticks que faltan para aplicarlo
-};
+class $modify(AdaptivePlayLayer, PlayLayer) {
+    struct Fields { std::unique_ptr<pib::Predictor> predictor; };
 
-class $modify(PIBBaseGameLayer, GJBaseGameLayer) {
-    struct Fields {
-        std::deque<PendingInput> queue;
-        bool applying = false;
-    };
-
-    void handleButton(bool down, int button, bool isPlayer1) {
-        auto f = m_fields.self();
-
-        // Pasar directo si esta apagado o si estamos reinyectando un input
-        if (f->applying || pib::g_stage == pib::OFF) {
-            GJBaseGameLayer::handleButton(down, button, isPlayer1);
-            return;
-        }
-
-        auto* player = isPlayer1 ? m_player1 : m_player2;
-        bool isWave = player && player->m_isDart;
-        auto stage = pib::STAGES[pib::g_stage];
-        int delay = isWave ? stage.wave : stage.all;
-
-        f->queue.push_back({ down, button, isPlayer1, delay });
-
-        if (pib::verbose()) {
-            log::info(
-                "*** BUFFERED +{} TICKS ({:.2f} frames @ 60fps) {}! [Limit: {}] ***",
-                delay, delay / 4.0f, down ? "PRESS" : "RELEASE", delay
-            );
-        }
+    bool init(GJGameLevel* level, bool replay, bool skipObjects) {
+        if (!PlayLayer::init(level, replay, skipObjects)) return false;
+        m_fields->predictor = std::make_unique<pib::Predictor>(this);
+        pib::active = m_fields->predictor.get();
+        return true;
     }
 
-    // Se llama una vez por paso de fisica: aqui descontamos ticks.
-   void processCommands(float dt, bool isHalfTick, bool isLastTick) {
-        auto f = m_fields.self();
-
-        for (auto it = f->queue.begin(); it != f->queue.end();) {
-            it->remaining -= 1;
-            if (it->remaining <= 0) {
-                f->applying = true;
-                GJBaseGameLayer::handleButton(it->down, it->button, it->player1);
-                f->applying = false;
-                it = f->queue.erase(it);
-            } else {
-                ++it;
-            }
-        }
-
-   GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
-    }
-};
-
-class $modify(PIBPlayLayer, PlayLayer) {
     void resetLevel() {
-        // Vaciar la cola al reiniciar para no filtrar inputs entre intentos
-        static_cast<PIBBaseGameLayer*>(static_cast<GJBaseGameLayer*>(this))
-            ->m_fields->queue.clear();
+        if (m_fields->predictor) m_fields->predictor->clear();
         PlayLayer::resetLevel();
     }
+
+    void destroyPlayer(PlayerObject* player, GameObject* object) {
+        if (pib::simulating() && player == pib::active->ghost.data()) {
+            pib::active->collision = true;
+            return;
+        }
+        if (m_fields->predictor) m_fields->predictor->clear();
+        PlayLayer::destroyPlayer(player, object);
+    }
+
+    void playEndAnimationToPos(CCPoint position) {
+        if (pib::simulating()) { pib::active->uncertain = true; return; }
+        PlayLayer::playEndAnimationToPos(position);
+    }
+
+    void onQuit() {
+        if (pib::active == m_fields->predictor.get()) pib::active = nullptr;
+        m_fields->predictor.reset();
+        PlayLayer::onQuit();
+    }
 };
 
-class $modify(PIBKeyboard, CCKeyboardDispatcher) {
+class $modify(AdaptiveBaseLayer, GJBaseGameLayer) {
+    void handleButton(bool down, int button, bool player1) {
+        auto* p = pib::active;
+        if (p && this == p->owner && !p->simulating && !p->injecting &&
+            button == 1 && player1 && p->intercept(down)) return;
+        GJBaseGameLayer::handleButton(down, button, player1);
+    }
+
+    void collisionCheckObjects(PlayerObject* player, gd::vector<GameObject*>* objects, int count, float dt) {
+        if (!pib::simulating()) {
+            GJBaseGameLayer::collisionCheckObjects(player, objects, count, dt);
+            return;
+        }
+        gd::vector<GameObject*> geometry;
+        const auto bounds = player->getObjectRect();
+        const int size = std::min(count, static_cast<int>(objects->size()));
+        geometry.reserve(size);
+        for (int i = 0; i < size; ++i) {
+            auto* object = (*objects)[i];
+            if (!object) continue;
+            if (pib::solid(object->m_objectType)) geometry.push_back(object);
+            else if (!pib::inert(object->m_objectType) && bounds.intersectsRect(object->getObjectRect())) {
+                // Portals, pads, orbs and special objects need world simulation.
+                // Return an unknown result so the real input passes unchanged.
+                pib::active->uncertain = true;
+            }
+        }
+        if (!pib::active->uncertain)
+            GJBaseGameLayer::collisionCheckObjects(player, &geometry, static_cast<int>(geometry.size()), dt);
+    }
+
+    bool canBeActivatedByPlayer(PlayerObject* player, EffectGameObject* object) {
+        if (pib::simulating()) return false;
+        return GJBaseGameLayer::canBeActivatedByPlayer(player, object);
+    }
+
+    void playerTouchedRing(PlayerObject* player, RingObject* ring) {
+        if (pib::simulating()) return;
+        GJBaseGameLayer::playerTouchedRing(player, ring);
+    }
+
+    void gameEventTriggered(GJGameEvent event, int material, int playerID) {
+        if (pib::simulating()) return;
+        GJBaseGameLayer::gameEventTriggered(event, material, playerID);
+    }
+
+    void flipGravity(PlayerObject* player, bool flip, bool noEffects) {
+        if (pib::simulating()) { player->flipGravity(flip, true); return; }
+        GJBaseGameLayer::flipGravity(player, flip, noEffects);
+    }
+
+    void playerWillSwitchMode(PlayerObject* player, GameObject* object) {
+        if (pib::simulating()) { pib::active->uncertain = true; return; }
+        GJBaseGameLayer::playerWillSwitchMode(player, object);
+    }
+};
+
+class $modify(AdaptivePlayer, PlayerObject) {
+    void update(float dt) {
+        auto* p = pib::active;
+        const bool realStep = p && !p->simulating && dt > 0.f && this == p->owner->m_player1;
+        if (realStep) p->beforeStep(dt);
+        PlayerObject::update(dt);
+        // Increment AFTER the step: a one-tick delay must not fire before this
+        // step's physics, which would be an accidental zero-tick delay.
+        if (realStep) ++p->tick;
+    }
+
+    void incrementJumps() {
+        if (!pib::simulating()) PlayerObject::incrementJumps();
+    }
+
+    void playSpiderDashEffect(CCPoint from, CCPoint to) {
+        if (!pib::simulating()) PlayerObject::playSpiderDashEffect(from, to);
+    }
+
+    void ringJump(RingObject* ring, bool skipCheck) {
+        if (!pib::simulating()) PlayerObject::ringJump(ring, skipCheck);
+    }
+};
+
+class $modify(AdaptiveKeyboard, CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
-        if (down && !repeat && key == KEY_F6) {
-            pib::g_stage = (pib::g_stage + 1) % 5;
-            pib::logStage();
+        if (key == KEY_F6 && pib::active) {
+            if (down && !repeat) pib::cycle();
             return true;
         }
         return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
     }
 };
 
+class $modify(AdaptiveEffects, EffectGameObject) {
+    void triggerObject(GJBaseGameLayer* layer, int group, gd::vector<int> const* remap) {
+        if (!pib::simulating()) EffectGameObject::triggerObject(layer, group, remap);
+    }
+};
+
+class $modify(AdaptiveShine, GameObject) {
+    void playShineEffect() {
+        if (!pib::simulating()) GameObject::playShineEffect();
+    }
+};
+
+class $modify(AdaptiveTrail, HardStreak) {
+    void addPoint(CCPoint point) {
+        if (!pib::simulating()) HardStreak::addPoint(point);
+    }
+};
+
 $on_mod(Loaded) {
-    log::info("[InputBuffer] v4.7 LOADED (Zero-Lag + Up Arrow Fix)");
-    log::info("[InputBuffer] Starting Mode: STAGE 1 (2 All / 2 Wave)");
-    log::info("[InputBuffer] Press F6 in-level to cycle: 2/2 -> 4/4 -> 8/8 -> 16/8 -> OFF");
+    log::info("[PIB] Adaptive early-input buffer loaded. F6: 1 / 2 / 4 / 8 / 16 / OFF. Inputs pass immediately unless a delayed trajectory clears a predicted collision.");
 }
