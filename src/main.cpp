@@ -9,6 +9,10 @@
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/ui/Notification.hpp>
+#include <Geode/ui/Popup.hpp>
+#include <Geode/binding/ButtonSprite.hpp>
+#include <Geode/binding/UILayer.hpp>
+#include "buffer_core.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -21,17 +25,18 @@ namespace pib {
     using Clock = std::chrono::steady_clock;
     struct Predictor;
     inline Predictor* active = nullptr;
-    enum class Verdict { Clear, Collision, Unknown };
+    using Verdict = core::Kind;
     struct Event { uint64_t tick; bool down; };
+    void toggleMenu();
+
+    bool enabled() { return Mod::get()->getSettingValue<bool>("enabled"); }
 
     int limit() {
-        return std::clamp(static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-delay")), 0, 16);
+        return core::ticks(static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-delay")));
     }
 
     int releaseLimit() {
-        // The UI uses frames at 60 FPS, independently of render FPS.
-        // One such frame contains four 240 Hz physics ticks.
-        return 4 * std::clamp(static_cast<int>(Mod::get()->getSettingValue<int64_t>("release-frames")), 0, 8);
+        return core::ticks(static_cast<int>(Mod::get()->getSettingValue<int64_t>("release-ticks")));
     }
 
     // Geode exposes renamed fields as anonymous unions, making GJGameState
@@ -219,6 +224,12 @@ namespace pib {
         PlayLayer* owner;
         Ref<PlayerObject> ghost;
         Ref<PlayerCheckpoint> checkpoint;
+        Ref<CCLabelBMFont> indicator;
+        std::unique_ptr<GameStateSnapshot> baselineWorld;
+        core::Decision lastDecision;
+        GameObject* killedBy = nullptr;
+        std::string status = "Listo";
+        int corrections = 0;
         std::deque<Event> pending;
         uint64_t tick = 0;
         int shift = 0;
@@ -233,6 +244,35 @@ namespace pib {
         explicit Predictor(PlayLayer* layer) : owner(layer) {}
         ~Predictor() { if (active == this) active = nullptr; }
 
+        char const* mode() const {
+            auto* p = owner->m_player1;
+            if (!p) return "Menu";
+            if (p->m_isDart) return "Wave";
+            if (p->m_isShip) return "Ship";
+            if (p->m_isBall) return "Ball";
+            if (p->m_isBird) return "UFO";
+            if (p->m_isRobot) return "Robot";
+            if (p->m_isSpider) return "Spider";
+            if (p->m_isSwing) return "Swing";
+            return "Cube";
+        }
+
+        void refreshIndicator() {
+            if (!indicator && owner->m_uiLayer) {
+                indicator = CCLabelBMFont::create("", "chatFont.fnt");
+                indicator->setID("input-buffer-status"_spr);
+                indicator->setScale(0.45f);
+                indicator->setAnchorPoint({0.f, 0.f});
+                indicator->setPosition({8.f, 6.f});
+                indicator->setOpacity(210);
+                owner->m_uiLayer->addChild(indicator.data(), 100);
+            }
+            if (!indicator) return;
+            indicator->setVisible(Mod::get()->getSettingValue<bool>("show-overlay"));
+            indicator->setString(fmt::format("PIB {} | Click {}t / Release {}t | F6\n{}",
+                enabled() ? "ON" : "OFF", limit(), releaseLimit(), status).c_str());
+        }
+
         void clear() {
             pending.clear();
             shift = 0;
@@ -243,8 +283,7 @@ namespace pib {
         bool supported() const {
             auto* p = owner->m_player1;
             return p && !p->m_isDead && !owner->m_isPaused &&
-                !owner->m_isPlatformer && !owner->m_gameState.m_isDualMode &&
-                !p->m_isSpider && !p->m_isDashing;
+                !owner->m_isPlatformer && !owner->m_gameState.m_isDualMode && !p->m_isDashing;
         }
 
         bool prepare() {
@@ -263,11 +302,12 @@ namespace pib {
 
         struct ProbeScope {
             Predictor& predictor;
-            GameStateSnapshot saved;
-            explicit ProbeScope(Predictor& p) : predictor(p), saved(p.owner->m_gameState) {
+            GameStateSnapshot& saved;
+            explicit ProbeScope(Predictor& p) : predictor(p), saved(*p.baselineWorld) {
                 p.simulating = true;
                 p.collision = false;
                 p.uncertain = false;
+                p.killedBy = nullptr;
             }
             ~ProbeScope() {
                 saved.restore(predictor.owner->m_gameState);
@@ -275,7 +315,7 @@ namespace pib {
             }
         };
 
-        Verdict probe(bool down, int delay, int horizon) {
+        core::Outcome probe(bool down, int delay, int horizon, uintptr_t originalObstacle) {
             ProbeScope scope(*this);
             auto* real = owner->m_player1;
             ghost->copyAttributes(real);
@@ -290,37 +330,82 @@ namespace pib {
 
             // A delayed RELEASE must begin with the actual held state and
             // keep it until `delay`. Never simulate an invented extra press.
-            if (!down && !ghost->buttonDown(PlayerButton::Jump)) return Verdict::Unknown;
+            if (!down && !ghost->buttonDown(PlayerButton::Jump)) return {Verdict::Unknown};
+
+            auto* danger = reinterpret_cast<GameObject*>(originalObstacle);
+            bool cleared = false;
+            bool previousGround = ghost->m_isOnGround;
+            bool flightStarted = !down && !previousGround;
+            bool completedFlight = false;
+            int stableLanding = 0;
+            const bool canLand = !real->m_isDart && !real->m_isShip && !real->m_isSwing;
+            const bool initialGravity = ghost->m_isUpsideDown;
+            auto result = [&](Verdict kind, int steps) {
+                return core::Outcome{kind, steps, reinterpret_cast<uintptr_t>(killedBy), cleared};
+            };
 
             // All candidates cover the SAME future interval. A later crash by
             // itself does not count as a successful correction.
             for (int i = 0; i < horizon; ++i) {
-                if (Clock::now() >= deadline) return Verdict::Unknown;
+                if (Clock::now() >= deadline) return result(Verdict::Timeout, i);
                 if (i == delay) {
                     if (down) ghost->pushButton(PlayerButton::Jump);
                     else ghost->releaseButton(PlayerButton::Jump);
+                    if (real->m_isBird || (real->m_isRobot && !previousGround)) flightStarted = true;
                 }
                 ghost->update(step);
                 ghost->updateRotation(step);
-                if (uncertain) return Verdict::Unknown;
-                if (collision || ghost->m_isDead) return Verdict::Collision;
+                if (uncertain) return result(Verdict::Unknown, i);
+                if (collision || ghost->m_isDead) return result(Verdict::Collision, i);
                 ghost->m_collisionLogTop->removeAllObjects();
                 ghost->m_collisionLogBottom->removeAllObjects();
                 ghost->m_collisionLogLeft->removeAllObjects();
                 ghost->m_collisionLogRight->removeAllObjects();
                 owner->checkCollisions(ghost.data(), step, false);
-                if (uncertain) return Verdict::Unknown;
-                if (collision || ghost->m_isDead) return Verdict::Collision;
+                if (uncertain) return result(Verdict::Unknown, i);
+                if (collision || ghost->m_isDead) return result(Verdict::Collision, i);
+
+                if (danger) {
+                    const auto playerBounds = ghost->getObjectRect();
+                    const auto hazardBounds = danger->getObjectRect();
+                    if (real->m_isGoingLeft)
+                        cleared = cleared || playerBounds.getMaxX() < hazardBounds.getMinX() - 2.f;
+                    else
+                        cleared = cleared || playerBounds.getMinX() > hazardBounds.getMaxX() + 2.f;
+                }
+                const bool grounded = ghost->m_isOnGround;
+                if (i >= delay && canLand) {
+                    if (!grounded && previousGround) flightStarted = true;
+                    if ((real->m_isBall || real->m_isSpider) && ghost->m_isUpsideDown != initialGravity)
+                        flightStarted = true;
+                    if (grounded && flightStarted) {
+                        if (!completedFlight) {
+                            // End this action at its landing. Holding the ghost
+                            // forever would manufacture a SECOND cube jump and
+                            // reject otherwise valid early-click corrections.
+                            completedFlight = true;
+                            ghost->releaseButton(PlayerButton::Jump);
+                        }
+                        if (++stableLanding >= 4) return result(Verdict::Landed, i + 1);
+                    } else if (completedFlight) {
+                        // Walking off an edge is not a stable landing.
+                        stableLanding = 0;
+                    }
+                }
+                previousGround = grounded;
             }
-            return Verdict::Clear;
+            return result(Verdict::Clear, horizon);
         }
 
         int chooseDelay(bool down) {
             const int maximum = down ? limit() : releaseLimit();
-            if (!limit() || !maximum || !supported()) return 0;
+            if (!enabled() || !maximum || !supported()) return 0;
             const double budget = Mod::get()->getSettingValue<double>("prediction-budget");
-            deadline = Clock::now() + std::chrono::microseconds(static_cast<int>(budget * 1000));
             if (!prepare()) return 0;
+            // Allocate the ghost and snapshot once, rather than copying all
+            // owning containers again for every candidate delay.
+            baselineWorld = std::make_unique<GameStateSnapshot>(owner->m_gameState);
+            deadline = Clock::now() + std::chrono::microseconds(static_cast<int>(budget * 1000));
             auto* p = owner->m_player1;
             // A cube jump needs enough lookahead to see its landing. A wave
             // must normally be steered again much sooner.
@@ -328,14 +413,27 @@ namespace pib {
                 p->m_isDart || p->m_isShip || p->m_isSwing ? "flight-horizon" : "ground-horizon"));
             // Even the largest candidate must actually RELEASE and be tested
             // afterwards. Surviving while holding forever is not a release save.
-            const int horizon = std::max(configuredHorizon, maximum + 8);
-            if (probe(down, 0, horizon) != Verdict::Collision) return 0;
-            for (int delay = 1; delay <= maximum; ++delay) {
-                const auto verdict = probe(down, delay, horizon);
-                if (verdict == Verdict::Clear) return delay;
-                if (verdict == Verdict::Unknown) return 0;
+            const int modeFloor = p->m_isDart ? 48 : (p->m_isShip || p->m_isSwing ? 64 : 128);
+            const int horizon = std::max({configuredHorizon, maximum + 12, modeFloor});
+            lastDecision = core::choose(maximum, [&](int delay, uintptr_t obstacle) {
+                return probe(down, delay, horizon, obstacle);
+            });
+            baselineWorld.reset();
+            switch (lastDecision.reason) {
+                case core::Reason::Corrected:
+                    status = fmt::format("{} +{}t | riesgo a {}t", down ? "Click" : "Release",
+                        lastDecision.delay, lastDecision.original.ticks);
+                    ++corrections;
+                    break;
+                case core::Reason::SafeNow: status = "Input seguro: sin espera"; break;
+                case core::Reason::Budget: status = "Tiempo de calculo agotado: input directo"; break;
+                case core::Reason::Uncertain: status = "Zona no simulable: input directo"; break;
+                default: status = fmt::format("Riesgo a {}t: sin correccion valida", lastDecision.original.ticks); break;
             }
-            return 0;
+            refreshIndicator();
+            if (Mod::get()->getSettingValue<bool>("verbose-log"))
+                log::info("[PIB] {} {}: {}", mode(), down ? "PRESS" : "RELEASE", status);
+            return lastDecision.delay;
         }
 
         void fire(bool down) {
@@ -356,9 +454,13 @@ namespace pib {
 
         bool intercept(bool down) {
             physicalDown = down;
-            if (!supported() || !limit()) {
+            if (!supported() || !enabled()) {
                 pending.clear();
                 shift = 0;
+                if (!owner->m_isPaused) {
+                    status = !enabled() ? "Buffer desactivado" : "Dual, platformer o dash: input directo";
+                    refreshIndicator();
+                }
                 return false;
             }
             if (!pending.empty()) {
@@ -373,11 +475,11 @@ namespace pib {
             pending.push_back({tick + static_cast<uint64_t>(delay), down});
             if (Mod::get()->getSettingValue<bool>("verbose-log")) {
                 if (down) {
-                    log::info("[PIB] PRESS delayed {} ticks (limit {}). Immediate path collided; delayed path cleared prediction.",
+                    log::info("[PIB] PRESS delayed {} ticks (limit {}). Predicted trajectory improvement.",
                         delay, limit());
                 } else {
-                    log::info("[PIB] RELEASE: kept holding {} extra ticks ({:.2f} frames at 60 FPS; limit {} ticks). Immediate release collided; delayed release cleared prediction.",
-                        delay, delay / 4.0, releaseLimit());
+                    log::info("[PIB] RELEASE: kept holding {} extra ticks (limit {} ticks). Predicted correction.",
+                        delay, releaseLimit());
                 }
             }
             return true;
@@ -386,7 +488,7 @@ namespace pib {
         void beforeStep(float dt) {
             // Keep time-warp and sub-tick steps in the same units as the game.
             if (dt > 0.f && dt <= 1.f) step = dt;
-            if (!supported() || !limit()) { flush(); return; }
+            if (!supported() || !enabled()) { flush(); return; }
             while (!pending.empty() && pending.front().tick <= tick) {
                 const bool down = pending.front().down;
                 pending.pop_front();
@@ -405,20 +507,149 @@ namespace pib {
 
     bool inert(GameObjectType type) {
         return type == GameObjectType::Decoration || type == GameObjectType::SecretCoin ||
-            type == GameObjectType::UserCoin || type == GameObjectType::Collectible;
+            type == GameObjectType::UserCoin || type == GameObjectType::Collectible ||
+            type == GameObjectType::EnterEffectObject;
     }
 
-    void cycle() {
-        constexpr int stages[] = {0, 1, 2, 4, 8, 16};
-        int next = 0;
-        for (int value : stages) if (value > limit()) { next = value; break; }
-        if (active) active->flush();
-        Mod::get()->setSettingValue<int64_t>("max-delay", next);
-        const auto message = next
-            ? fmt::format("Buffer: click {}t | release {}t ({:.1f}f)", next, releaseLimit(), releaseLimit() / 4.0)
-            : "Input Buffer: OFF";
-        Notification::create(message, NotificationIcon::Info, 1.5f)->show();
-        log::info("[PIB] {}", message);
+    bool needsWorldSimulation(GameObject* object) {
+        if (solid(object->m_objectType) || inert(object->m_objectType)) return false;
+        if (object->m_objectType == GameObjectType::Modifier) {
+            // Speed portals are modifiers. Ordinary colour/visual triggers
+            // should not mark every nearby cube trajectory as unknowable.
+            const int id = object->m_objectID;
+            return id == 200 || id == 201 || id == 202 || id == 203 || id == 1334;
+        }
+        return true;
+    }
+
+}
+
+namespace pib {
+    class SettingsMenu;
+    inline SettingsMenu* menu = nullptr;
+
+    class SettingsMenu : public Popup {
+        CCLabelBMFont* m_pressValue = nullptr;
+        CCLabelBMFont* m_releaseValue = nullptr;
+        CCLabelBMFont* m_enabledValue = nullptr;
+        CCLabelBMFont* m_visibilityValue = nullptr;
+        CCLabelBMFont* m_statusValue = nullptr;
+
+        CCLabelBMFont* label(char const* text, float x, float y, float scale = 0.4f) {
+            auto* item = CCLabelBMFont::create(text, "bigFont.fnt");
+            item->setScale(scale);
+            item->setPosition({x, y});
+            m_mainLayer->addChild(item);
+            return item;
+        }
+
+        void button(char const* text, float x, float y, int tag, float scale = 0.45f) {
+            auto* sprite = ButtonSprite::create(text);
+            auto* item = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(SettingsMenu::onAction));
+            item->setScale(scale);
+            item->setPosition({x, y});
+            item->setTag(tag);
+            m_buttonMenu->addChild(item);
+        }
+
+        void refresh() {
+            m_pressValue->setString(fmt::format("{} ticks", limit()).c_str());
+            m_releaseValue->setString(fmt::format("{} ticks", releaseLimit()).c_str());
+            m_enabledValue->setString(enabled() ? "ACTIVADO" : "DESACTIVADO");
+            m_enabledValue->setColor(enabled() ? ccColor3B{110, 255, 120} : ccColor3B{255, 130, 110});
+            m_visibilityValue->setString(Mod::get()->getSettingValue<bool>("show-overlay")
+                ? "Indicador visible" : "Indicador oculto");
+            const auto detail = active
+                ? fmt::format("{} | {} correcciones\n{}", active->mode(), active->corrections, active->status)
+                : "Configura los limites y entra a un nivel";
+            m_statusValue->setString(detail.c_str());
+            m_statusValue->limitLabelWidth(365.f, 0.36f, 0.22f);
+            if (active) active->refreshIndicator();
+        }
+
+        bool setupMenu() {
+            if (!Popup::init(400.f, 310.f)) return false;
+            setTitle("Predictive Input Buffer");
+            label("Limites de correccion. 0 = sin ayuda para esa accion.", 200, 267, 0.29f);
+            m_enabledValue = label("", 200, 245, 0.43f);
+            label("Al pulsar", 66, 214, 0.42f);
+            m_pressValue = label("", 205, 214, 0.5f);
+            button("-", 143, 214, 5, 0.5f);
+            button("+", 270, 214, 6, 0.5f);
+            label("Al soltar", 66, 150, 0.42f);
+            m_releaseValue = label("", 205, 150, 0.5f);
+            button("-", 143, 150, 7, 0.5f);
+            button("+", 270, 150, 8, 0.5f);
+            constexpr int values[] = {1, 2, 4, 8, 16, 32};
+            for (int i = 0; i < 6; ++i) {
+                const auto caption = std::to_string(values[i]);
+                button(caption.c_str(), 100.f + i * 40.f, 189.f, 100 + values[i], 0.4f);
+                button(caption.c_str(), 100.f + i * 40.f, 125.f, 200 + values[i], 0.4f);
+            }
+            button("Activar / Desactivar", 105, 91, 1, 0.42f);
+            button("Mostrar / Ocultar", 295, 91, 2, 0.42f);
+            m_visibilityValue = label("", 295, 72, 0.26f);
+            m_statusValue = label("", 200, 50, 0.36f);
+            button("Como funciona", 112, 21, 3, 0.4f);
+            button("Cerrar", 300, 21, 4, 0.4f);
+            refresh();
+            return true;
+        }
+
+        void onAction(CCObject* sender) {
+            const int action = static_cast<CCNode*>(sender)->getTag();
+            if (action == 4) { onClose(sender); return; }
+            if (action == 3) {
+                FLAlertLayer::create("Como funciona",
+                    "Al <cy>pulsar o soltar</c>, compara tu trayectoria con retrasos de 1 hasta el limite de ticks. "
+                    "Solo espera si predice una mejora. Si sueltas pronto, mantiene el boton antes de soltar.\n\n"
+                    "Cube, ship, ball, UFO, robot, spider, wave y swing. El indicador explica cada decision. "
+                    "<cy>F6</c> abre o cierra este menu; puedes ocultar el indicador.\n\n"
+                    "No garantiza sobrevivir. Dual, platformer, dash y encuentros con portales/orbes/pads "
+                    "pueden pasar sin correccion. Los objetos moviles y otros mods de fisica pueden reducir la precision.\n\n"
+                    "Si abriste el menu durante un nivel, cierralo y pulsa Reanudar.", "OK")->show();
+                return;
+            }
+            if (active) active->flush();
+            if (action == 1) Mod::get()->setSettingValue<bool>("enabled", !enabled());
+            else if (action == 2) Mod::get()->setSettingValue<bool>("show-overlay",
+                !Mod::get()->getSettingValue<bool>("show-overlay"));
+            else if (action >= 100 && action < 200)
+                Mod::get()->setSettingValue<int64_t>("max-delay", core::ticks(action - 100));
+            else if (action >= 200)
+                Mod::get()->setSettingValue<int64_t>("release-ticks", core::ticks(action - 200));
+            else if (action == 5 || action == 6)
+                Mod::get()->setSettingValue<int64_t>("max-delay", core::ticks(limit() + (action == 5 ? -1 : 1)));
+            else if (action == 7 || action == 8)
+                Mod::get()->setSettingValue<int64_t>("release-ticks", core::ticks(releaseLimit() + (action == 7 ? -1 : 1)));
+            refresh();
+        }
+
+        void onClose(CCObject* sender) override {
+            if (menu == this) menu = nullptr;
+            Popup::onClose(sender);
+        }
+
+        ~SettingsMenu() { if (menu == this) menu = nullptr; }
+
+    public:
+        static SettingsMenu* create() {
+            auto* result = new SettingsMenu;
+            if (result->setupMenu()) { result->autorelease(); return result; }
+            delete result;
+            return nullptr;
+        }
+        void dismiss() { onClose(nullptr); }
+    };
+
+    void toggleMenu() {
+        if (menu) { menu->dismiss(); return; }
+        if (active && !active->owner->m_isPaused) {
+            active->flush();
+            active->owner->pauseGame(false);
+        }
+        menu = SettingsMenu::create();
+        if (menu) menu->show();
     }
 }
 
@@ -434,6 +665,7 @@ class $modify(AdaptivePlayLayer, PlayLayer) {
         if (!PlayLayer::init(level, replay, skipObjects)) return false;
         m_fields->predictor = std::make_unique<pib::Predictor>(this);
         pib::active = m_fields->predictor.get();
+        pib::active->refreshIndicator();
         return true;
     }
 
@@ -445,6 +677,7 @@ class $modify(AdaptivePlayLayer, PlayLayer) {
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         if (pib::simulating() && player == pib::active->ghost.data()) {
             pib::active->collision = true;
+            pib::active->killedBy = object;
             return;
         }
         if (m_fields->predictor) m_fields->predictor->clear();
@@ -492,7 +725,7 @@ class $modify(AdaptiveBaseLayer, GJBaseGameLayer) {
             auto* object = (*objects)[i];
             if (!object) continue;
             if (pib::solid(object->m_objectType)) geometry.push_back(object);
-            else if (!pib::inert(object->m_objectType) && bounds.intersectsRect(object->getObjectRect())) {
+            else if (pib::needsWorldSimulation(object) && bounds.intersectsRect(object->getObjectRect())) {
                 // Portals, pads, orbs and special objects need world simulation.
                 // Return an unknown result so the real input passes unchanged.
                 pib::active->uncertain = true;
@@ -554,8 +787,8 @@ class $modify(AdaptivePlayer, PlayerObject) {
 
 class $modify(AdaptiveKeyboard, CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
-        if (key == KEY_F6 && pib::active) {
-            if (down && !repeat) pib::cycle();
+        if (key == KEY_F6) {
+            if (down && !repeat) pib::toggleMenu();
             return true;
         }
         return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
@@ -581,6 +814,6 @@ class $modify(AdaptiveTrail, HardStreak) {
 };
 
 $on_mod(Loaded) {
-    log::info("[PIB] v4.8.1: adaptive presses and releases. Early releases can keep holding up to {} ticks ({:.1f} frames at 60 FPS). F6 changes the press limit; OFF disables both.",
-        pib::releaseLimit(), pib::releaseLimit() / 4.0);
+    log::info("[PIB] v4.9.0 loaded. Click {} ticks, release {} ticks. F6 opens settings; the indicator can be hidden.",
+        pib::limit(), pib::releaseLimit());
 }
