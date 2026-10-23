@@ -3,7 +3,7 @@
   "gd": {
     "win": "2.2081"
   },
-  "version": "v4.9.1",
+  "version": "v4.10.0",
   "id": "ech8.predictive-input-buffer",
   "name": "Predictive Input Buffer",
   "developer": "Ech8",
@@ -57,15 +57,27 @@
       "type": "float",
       "name": "Tiempo maximo de busqueda (ms)",
       "description": "Tiempo disponible tras preparar la simulacion. Si se agota sin encontrar una mejora, se aplica el input original. Aumentarlo puede producir tirones.",
-      "default": 12.0,
-      "min": 2.0,
-      "max": 25.0
+      "default": 12,
+      "min": 2,
+      "max": 25
     },
     "verbose-log": {
       "type": "bool",
       "name": "Diagnostico de inputs",
       "description": "Indica modo, riesgo detectado, correccion o motivo por el que el input paso sin espera.",
       "default": true
+    },
+    "input-log": {
+      "type": "bool",
+      "name": "Guardar registro de inputs",
+      "description": "Guarda clics, sueltas, posicion X/Y, porcentaje, ticks, intento y correcciones aplicadas en input-log.csv dentro de la carpeta de datos del mod. Registro en Shift+F12 muestra los ultimos eventos.",
+      "default": true
+    },
+    "white-flash": {
+      "type": "bool",
+      "name": "Destello blanco al corregir",
+      "description": "Destello blanco suave de 0.15 segundos al aplicar una correccion. Se puede activar desde Shift+F12 > Destello. Indica una mejora predicha, no una supervivencia garantizada.",
+      "default": false
     }
   },
   "links": {
