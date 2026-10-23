@@ -28,6 +28,12 @@ namespace pib {
         return std::clamp(static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-delay")), 0, 16);
     }
 
+    int releaseLimit() {
+        // The UI uses frames at 60 FPS, independently of render FPS.
+        // One such frame contains four 240 Hz physics ticks.
+        return 4 * std::clamp(static_cast<int>(Mod::get()->getSettingValue<int64_t>("release-frames")), 0, 8);
+    }
+
     // Geode exposes renamed fields as anonymous unions, making GJGameState
     // non-copyable. Copy canonical fields individually, including containers;
     // never memcpy owning containers or duplicate their allocation pointers.
@@ -282,6 +288,10 @@ namespace pib {
             ghost->m_isDead = false;
             ghost->setVisible(false);
 
+            // A delayed RELEASE must begin with the actual held state and
+            // keep it until `delay`. Never simulate an invented extra press.
+            if (!down && !ghost->buttonDown(PlayerButton::Jump)) return Verdict::Unknown;
+
             // All candidates cover the SAME future interval. A later crash by
             // itself does not count as a successful correction.
             for (int i = 0; i < horizon; ++i) {
@@ -306,16 +316,19 @@ namespace pib {
         }
 
         int chooseDelay(bool down) {
-            const int maximum = limit();
-            if (!maximum || !supported()) return 0;
+            const int maximum = down ? limit() : releaseLimit();
+            if (!limit() || !maximum || !supported()) return 0;
             const double budget = Mod::get()->getSettingValue<double>("prediction-budget");
             deadline = Clock::now() + std::chrono::microseconds(static_cast<int>(budget * 1000));
             if (!prepare()) return 0;
             auto* p = owner->m_player1;
             // A cube jump needs enough lookahead to see its landing. A wave
             // must normally be steered again much sooner.
-            const int horizon = static_cast<int>(Mod::get()->getSettingValue<int64_t>(
+            const int configuredHorizon = static_cast<int>(Mod::get()->getSettingValue<int64_t>(
                 p->m_isDart || p->m_isShip || p->m_isSwing ? "flight-horizon" : "ground-horizon"));
+            // Even the largest candidate must actually RELEASE and be tested
+            // afterwards. Surviving while holding forever is not a release save.
+            const int horizon = std::max(configuredHorizon, maximum + 8);
             if (probe(down, 0, horizon) != Verdict::Collision) return 0;
             for (int delay = 1; delay <= maximum; ++delay) {
                 const auto verdict = probe(down, delay, horizon);
@@ -359,8 +372,13 @@ namespace pib {
             shift = delay;
             pending.push_back({tick + static_cast<uint64_t>(delay), down});
             if (Mod::get()->getSettingValue<bool>("verbose-log")) {
-                log::info("[PIB] {} delayed {} ticks (limit {}). Immediate path collided; delayed path cleared prediction.",
-                    down ? "PRESS" : "RELEASE", delay, limit());
+                if (down) {
+                    log::info("[PIB] PRESS delayed {} ticks (limit {}). Immediate path collided; delayed path cleared prediction.",
+                        delay, limit());
+                } else {
+                    log::info("[PIB] RELEASE: kept holding {} extra ticks ({:.2f} frames at 60 FPS; limit {} ticks). Immediate release collided; delayed release cleared prediction.",
+                        delay, delay / 4.0, releaseLimit());
+                }
             }
             return true;
         }
@@ -396,7 +414,9 @@ namespace pib {
         for (int value : stages) if (value > limit()) { next = value; break; }
         if (active) active->flush();
         Mod::get()->setSettingValue<int64_t>("max-delay", next);
-        const auto message = next ? fmt::format("Input Buffer: hasta {} ticks", next) : "Input Buffer: OFF";
+        const auto message = next
+            ? fmt::format("Buffer: click {}t | release {}t ({:.1f}f)", next, releaseLimit(), releaseLimit() / 4.0)
+            : "Input Buffer: OFF";
         Notification::create(message, NotificationIcon::Info, 1.5f)->show();
         log::info("[PIB] {}", message);
     }
@@ -561,5 +581,6 @@ class $modify(AdaptiveTrail, HardStreak) {
 };
 
 $on_mod(Loaded) {
-    log::info("[PIB] Adaptive early-input buffer loaded. F6: 1 / 2 / 4 / 8 / 16 / OFF. Inputs pass immediately unless a delayed trajectory clears a predicted collision.");
+    log::info("[PIB] v4.8.1: adaptive presses and releases. Early releases can keep holding up to {} ticks ({:.1f} frames at 60 FPS). F6 changes the press limit; OFF disables both.",
+        pib::releaseLimit(), pib::releaseLimit() / 4.0);
 }
