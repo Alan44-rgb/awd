@@ -1,6 +1,8 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
+#include <limits>
 
 namespace pib::core {
     enum class Kind { Clear, Landed, Collision, Unknown, Timeout };
@@ -19,6 +21,12 @@ namespace pib::core {
     };
 
     inline int ticks(int value) { return std::clamp(value, 0, 32); }
+    constexpr double timeEpsilon = 1e-7;
+    // CBF substeps advance fractions of a native tick, never whole ticks.
+    inline double span(double now, double available, double due = std::numeric_limits<double>::infinity()) {
+        const double boundary = std::floor(now + timeEpsilon) + 1.0;
+        return std::max(0.0, std::min({available, boundary - now, due - now}));
+    }
 
     // The probe owns simulation; this policy is deliberately independent of GD.
     template <class Probe>

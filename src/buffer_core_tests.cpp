@@ -72,5 +72,34 @@ int main() {
         require(fallback.delay == 1, "bad extra tick retains validated correction");
     }
     require(ticks(-1) == 0 && ticks(99) == 32, "tick limits are clamped");
+    int fractionalCases = 0;
+    for (double phase : {0.0, 0.01, 0.125, 0.375, 0.5, 0.875, 0.99}) {
+        for (int delay = 1; delay <= 33; ++delay) {
+            const double due = phase + delay;
+            double realClock = phase;
+            int substeps = 0;
+            while (realClock < due - timeEpsilon) {
+                const double incoming = substeps % 3 == 0 ? 0.125 : (substeps % 3 == 1 ? 0.375 : 0.5);
+                double remaining = incoming;
+                while (remaining > timeEpsilon && realClock < due - timeEpsilon) {
+                    const double piece = span(realClock, remaining, due);
+                    require(piece > 0 && piece <= remaining + timeEpsilon, "CBF scheduler makes bounded progress");
+                    realClock += piece;
+                    remaining -= piece;
+                    require(realClock <= due + timeEpsilon, "CBF input cannot overrun its deadline");
+                }
+                require(++substeps < 1000, "CBF scheduler terminates");
+            }
+            double predictedClock = phase;
+            while (predictedClock < due - timeEpsilon)
+                predictedClock += span(predictedClock, due - predictedClock, due);
+            require(std::abs(realClock - due) < timeEpsilon &&
+                std::abs(realClock - predictedClock) < timeEpsilon,
+                "split real steps and prediction deliver on the same fractional tick");
+            ++fractionalCases;
+        }
+    }
+    require(fractionalCases == 231, "all CBF phases and delays checked");
     std::cout << "PASS: cube/release/obstacle/budget scenarios and 2112 tick-window cases\n";
+    std::cout << "PASS: 231 CBF fractional-tick scheduling cases\n";
 }

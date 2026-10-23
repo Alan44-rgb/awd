@@ -17,6 +17,8 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <fstream>
+#include <filesystem>
 #include <memory>
 
 using namespace geode::prelude;
@@ -26,7 +28,7 @@ namespace pib {
     struct Predictor;
     inline Predictor* active = nullptr;
     using Verdict = core::Kind;
-    struct Event { uint64_t tick; bool down; };
+    struct Event { double tick; bool down; uint64_t id; int delay; bool correction; };
     void toggleMenu();
 
     bool enabled() { return Mod::get()->getSettingValue<bool>("enabled"); }
@@ -230,10 +232,25 @@ namespace pib {
         GameObject* killedBy = nullptr;
         std::string status = "Listo";
         int corrections = 0;
+        uint64_t inputSequence = 0;
+        int presses = 0;
+        int releases = 0;
+        int attempt = 1;
+        float lastCorrectionPercent = -1.f;
+        std::deque<std::string> recentInputs;
+        std::ofstream inputLog;
+        const int64_t session = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        Clock::time_point lastFlash{};
+        uint64_t currentInputID = 0;
+        int currentDelay = 0;
+        double lastCorrectionTick = -1.0;
         std::deque<Event> pending;
         uint64_t tick = 0;
+        double tickTime = 0.0;
+        int outerDepth = 0;
         int shift = 0;
-        float step = 0.25f; // PlayerObject uses GD units: one 240 Hz step = 0.25.
+        float step = 0.25f; // Full native tick; never overwritten by a CBF substep.
         bool physicalDown = false;
         bool injecting = false;
         bool simulating = false;
@@ -243,6 +260,55 @@ namespace pib {
 
         explicit Predictor(PlayLayer* layer) : owner(layer) {}
         ~Predictor() { if (active == this) active = nullptr; }
+
+        void record(char const* phase, uint64_t id, bool down, int delay, char const* reason) {
+            if (simulating || !Mod::get()->getSettingValue<bool>("input-log")) return;
+            auto* p = owner->m_player1;
+            const auto pos = p ? p->getPosition() : CCPoint{0.f, 0.f};
+            const float percent = owner->getCurrentPercent();
+            if (!inputLog.is_open()) {
+                const auto path = Mod::get()->getSaveDir() / "input-log.csv";
+                std::error_code error;
+                const bool header = !std::filesystem::exists(path, error) ||
+                    std::filesystem::file_size(path, error) == 0;
+                inputLog.open(path, std::ios::app);
+                if (inputLog && header)
+                    inputLog << "session,level_id,attempt,event_id,phase,tick,input,mode,x,y,percent,delay_ticks,reason,tick_fraction,native_dt,held,on_ground,jump_buffered,age_since_correction\n";
+                if (!inputLog) log::warn("[PIB] Could not open input-log.csv");
+            }
+            if (inputLog) {
+                inputLog << fmt::format("{},{},{},{},{},{},{},{},{:.3f},{:.3f},{:.3f},{},{},{:.6f},{:.7f},{},{},{},{:.6f}\n",
+                    session, static_cast<int>(owner->m_level->m_levelID), attempt, id, phase,
+                    tick, down ? "CLICK" : "RELEASE", mode(), pos.x, pos.y, percent, delay, reason,
+                    tickTime, step, p && p->buttonDown(PlayerButton::Jump), p && p->m_isOnGround,
+                    p && p->m_jumpBuffered, lastCorrectionTick < 0 ? -1.0 : tickTime - lastCorrectionTick);
+                // Keep the latest input available even if the game crashes.
+                inputLog.flush();
+            }
+            if (std::string_view(phase) == "RECIBIDO" || std::string_view(phase) == "APLICADO") {
+                recentInputs.push_back(fmt::format("#{} {} {} {:.2f}% ({:.0f}, {:.0f}) +{}t",
+                    id, down ? "Click" : "Release", phase, percent, pos.x, pos.y, delay));
+                if (recentInputs.size() > 8) recentInputs.pop_front();
+            }
+        }
+
+        void correctionApplied(Event const& event) {
+            ++corrections;
+            lastCorrectionPercent = owner->getCurrentPercent();
+            lastCorrectionTick = tickTime;
+            status = fmt::format("Correccion #{}: {} +{}t en {:.2f}%", corrections,
+                event.down ? "Click" : "Release", event.delay, lastCorrectionPercent);
+            refreshIndicator();
+            if (!Mod::get()->getSettingValue<bool>("white-flash") || !owner->m_uiLayer) return;
+            const auto now = Clock::now();
+            if (now - lastFlash < std::chrono::milliseconds(250)) return;
+            lastFlash = now;
+            auto* flash = CCLayerColor::create({255, 255, 255, 70});
+            flash->setContentSize(CCDirector::sharedDirector()->getWinSize());
+            flash->setID("correction-flash"_spr);
+            owner->m_uiLayer->addChild(flash, 9999);
+            flash->runAction(CCSequence::create(CCFadeOut::create(0.15f), CCRemoveSelf::create(), nullptr));
+        }
 
         char const* mode() const {
             auto* p = owner->m_player1;
@@ -269,14 +335,20 @@ namespace pib {
             }
             if (!indicator) return;
             indicator->setVisible(Mod::get()->getSettingValue<bool>("show-overlay"));
-            indicator->setString(fmt::format("PIB {} | Click {}t / Release {}t | Shift+F12\n{}",
-                enabled() ? "ON" : "OFF", limit(), releaseLimit(), status).c_str());
+            const auto saved = lastCorrectionPercent < 0 ? std::string("Ninguna correccion aplicada") :
+                fmt::format("Ultima: {:.2f}% | Total: {}", lastCorrectionPercent, corrections);
+            indicator->setString(fmt::format("PIB {} | Click {}t / Release {}t | Shift+F12\n{}\n{}",
+                enabled() ? "ON" : "OFF", limit(), releaseLimit(), status, saved).c_str());
         }
 
         void clear() {
+            for (auto const& event : pending)
+                record("CANCELADO", event.id, event.down, event.delay, "fin_del_intento");
             pending.clear();
             shift = 0;
             tick = 0;
+            tickTime = 0.0;
+            lastCorrectionTick = -1.0;
             physicalDown = false;
         }
 
@@ -337,7 +409,7 @@ namespace pib {
             bool previousGround = ghost->m_isOnGround;
             bool flightStarted = !down && !previousGround;
             bool completedFlight = false;
-            int stableLanding = 0;
+            double stableLanding = 0.0;
             const bool canLand = !real->m_isDart && !real->m_isShip && !real->m_isSwing;
             const bool initialGravity = ghost->m_isUpsideDown;
             auto result = [&](Verdict kind, int steps) {
@@ -346,22 +418,32 @@ namespace pib {
 
             // All candidates cover the SAME future interval. A later crash by
             // itself does not count as a successful correction.
-            for (int i = 0; i < horizon; ++i) {
+            double elapsed = 0.0;
+            bool applied = false;
+            while (elapsed < horizon - core::timeEpsilon) {
+                const int i = static_cast<int>(elapsed + core::timeEpsilon);
                 if (Clock::now() >= deadline) return result(Verdict::Timeout, i);
-                if (i == delay) {
+                if (!applied && elapsed + core::timeEpsilon >= delay) {
+                    applied = true;
                     if (down) ghost->pushButton(PlayerButton::Jump);
                     else ghost->releaseButton(PlayerButton::Jump);
                     if (real->m_isBird || (real->m_isRobot && !previousGround)) flightStarted = true;
                 }
-                ghost->update(step);
-                ghost->updateRotation(step);
+                const double span = core::span(tickTime + elapsed, horizon - elapsed,
+                    applied ? std::numeric_limits<double>::infinity() : tickTime + delay);
+                if (span <= core::timeEpsilon) return result(Verdict::Unknown, i);
+                const float dt = static_cast<float>(span * step);
+                ghost->update(dt);
+                ghost->updateRotation(dt);
+                elapsed += span;
                 if (uncertain) return result(Verdict::Unknown, i);
                 if (collision || ghost->m_isDead) return result(Verdict::Collision, i);
                 ghost->m_collisionLogTop->removeAllObjects();
                 ghost->m_collisionLogBottom->removeAllObjects();
                 ghost->m_collisionLogLeft->removeAllObjects();
                 ghost->m_collisionLogRight->removeAllObjects();
-                owner->checkCollisions(ghost.data(), step, false);
+                const bool fullBoundary = std::abs(tickTime + elapsed - std::round(tickTime + elapsed)) < core::timeEpsilon;
+                owner->checkCollisions(ghost.data(), fullBoundary || ghost->m_isOnSlope ? step : 0.f, false);
                 if (uncertain) return result(Verdict::Unknown, i);
                 if (collision || ghost->m_isDead) return result(Verdict::Collision, i);
 
@@ -386,7 +468,8 @@ namespace pib {
                             completedFlight = true;
                             ghost->releaseButton(PlayerButton::Jump);
                         }
-                        if (++stableLanding >= 4) return result(Verdict::Landed, i + 1);
+                        stableLanding += span;
+                        if (stableLanding >= 4.0) return result(Verdict::Landed, i + 1);
                     } else if (completedFlight) {
                         // Walking off an edge is not a stable landing.
                         stableLanding = 0;
@@ -423,7 +506,6 @@ namespace pib {
                 case core::Reason::Corrected:
                     status = fmt::format("{} +{}t | riesgo a {}t", down ? "Click" : "Release",
                         lastDecision.delay, lastDecision.original.ticks);
-                    ++corrections;
                     break;
                 case core::Reason::SafeNow: status = "Input seguro: sin espera"; break;
                 case core::Reason::Budget: status = "Tiempo de calculo agotado: input directo"; break;
@@ -446,6 +528,8 @@ namespace pib {
             // Reconcile the held state when disabling the buffer or leaving a
             // supported mode, rather than replaying obsolete presses at once.
             const bool hadPending = !pending.empty();
+            for (auto const& event : pending)
+                record("CANCELADO", event.id, event.down, event.delay, "sincronizar_estado");
             pending.clear();
             shift = 0;
             if (hadPending && owner->m_player1 && !owner->m_player1->m_isDead)
@@ -454,25 +538,38 @@ namespace pib {
 
         bool intercept(bool down) {
             physicalDown = down;
+            const auto id = ++inputSequence;
+            currentInputID = id;
+            currentDelay = 0;
+            if (down) ++presses; else ++releases;
+            record("RECIBIDO", id, down, 0, "input_fisico");
             if (!supported() || !enabled()) {
+                for (auto const& event : pending)
+                    record("CANCELADO", event.id, event.down, event.delay, "modo_no_soportado");
                 pending.clear();
                 shift = 0;
                 if (!owner->m_isPaused) {
                     status = !enabled() ? "Buffer desactivado" : "Dual, platformer o dash: input directo";
                     refreshIndicator();
                 }
+                record("DIRECTO", id, down, 0, !enabled() ? "desactivado" : "modo_no_soportado");
                 return false;
             }
             if (!pending.empty()) {
                 // Shift the complete tap by the original amount, so a release
                 // cannot overtake its press and short taps keep their duration.
-                pending.push_back({tick + static_cast<uint64_t>(shift), down});
+                pending.push_back({tickTime + shift, down, id, shift, false});
+                record("EN_COLA", id, down, shift, "mantener_duracion_del_tap");
                 return true;
             }
             const int delay = chooseDelay(down);
-            if (!delay) return false;
+            if (!delay) {
+                record("DIRECTO", id, down, 0, "sin_correccion");
+                return false;
+            }
             shift = delay;
-            pending.push_back({tick + static_cast<uint64_t>(delay), down});
+            pending.push_back({tickTime + delay, down, id, delay, true});
+            record("EN_COLA", id, down, delay, "mejora_predicha");
             if (Mod::get()->getSettingValue<bool>("verbose-log")) {
                 if (down) {
                     log::info("[PIB] PRESS delayed {} ticks (limit {}). Predicted trajectory improvement.",
@@ -486,15 +583,23 @@ namespace pib {
         }
 
         void beforeStep(float dt) {
-            // Keep time-warp and sub-tick steps in the same units as the game.
-            if (dt > 0.f && dt <= 1.f) step = dt;
             if (!supported() || !enabled()) { flush(); return; }
-            while (!pending.empty() && pending.front().tick <= tick) {
-                const bool down = pending.front().down;
+            while (!pending.empty() && pending.front().tick <= tickTime + core::timeEpsilon) {
+                const auto event = pending.front();
                 pending.pop_front();
-                fire(down);
+                currentInputID = event.id;
+                currentDelay = event.delay;
+                fire(event.down);
+                if (event.correction) correctionApplied(event);
+                record("APLICADO", event.id, event.down, event.delay,
+                    event.correction ? "correccion_predicha" : "tap_vinculado");
             }
             if (pending.empty()) shift = 0;
+        }
+
+        void advance(double span) {
+            tickTime += span;
+            tick = static_cast<uint64_t>(tickTime + core::timeEpsilon);
         }
     };
 
@@ -534,6 +639,7 @@ namespace pib {
         CCLabelBMFont* m_enabledValue = nullptr;
         CCLabelBMFont* m_visibilityValue = nullptr;
         CCLabelBMFont* m_statusValue = nullptr;
+        CCLabelBMFont* m_flashValue = nullptr;
 
         CCLabelBMFont* label(char const* text, float x, float y, float scale = 0.4f) {
             auto* item = CCLabelBMFont::create(text, "bigFont.fnt");
@@ -560,6 +666,8 @@ namespace pib {
             m_enabledValue->setColor(enabled() ? ccColor3B{110, 255, 120} : ccColor3B{255, 130, 110});
             m_visibilityValue->setString(Mod::get()->getSettingValue<bool>("show-overlay")
                 ? "Indicador visible" : "Indicador oculto");
+            m_flashValue->setString(Mod::get()->getSettingValue<bool>("white-flash")
+                ? "Destello ACTIVADO" : "Destello DESACTIVADO");
             const auto detail = active
                 ? fmt::format("{} | {} correcciones\n{}", active->mode(), active->corrections, active->status)
                 : "Configura los limites y entra a un nivel";
@@ -571,6 +679,7 @@ namespace pib {
         bool setupMenu() {
             if (!Popup::init(400.f, 310.f)) return false;
             setTitle("Predictive Input Buffer");
+            m_flashValue = label("", 105, 72, 0.24f);
             label("Limites de correccion. 0 = sin ayuda para esa accion.", 200, 267, 0.29f);
             m_enabledValue = label("", 200, 245, 0.43f);
             label("Al pulsar", 66, 214, 0.42f);
@@ -591,8 +700,10 @@ namespace pib {
             button("Mostrar / Ocultar", 295, 91, 2, 0.42f);
             m_visibilityValue = label("", 295, 72, 0.26f);
             m_statusValue = label("", 200, 50, 0.36f);
-            button("Como funciona", 112, 21, 3, 0.4f);
-            button("Cerrar", 300, 21, 4, 0.4f);
+            button("Como funciona", 62, 21, 3, 0.32f);
+            button("Registro", 164, 21, 9, 0.32f);
+            button("Destello", 260, 21, 10, 0.32f);
+            button("Cerrar", 352, 21, 4, 0.32f);
             refresh();
             return true;
         }
@@ -600,6 +711,25 @@ namespace pib {
         void onAction(CCObject* sender) {
             const int action = static_cast<CCNode*>(sender)->getTag();
             if (action == 4) { onClose(sender); return; }
+            if (action == 9) {
+                std::string text = active ? fmt::format(
+                    "Clicks: {} | Sueltas: {}\nCorrecciones aplicadas: {}\n",
+                    active->presses, active->releases, active->corrections) : "Entra a un nivel para ver esta sesion.\n";
+                if (active) {
+                    if (active->lastCorrectionPercent >= 0.f)
+                        text += fmt::format("Ultima correccion: <cy>{:.2f}%</c>\n", active->lastCorrectionPercent);
+                    for (auto const& line : active->recentInputs) text += line + "\n";
+                }
+                text += "\nCSV completo: input-log.csv\n" + Mod::get()->getSaveDir().generic_string();
+                text += "\n\nEl porcentaje es el punto donde se aplica la correccion. La mejora es predicha; no garantiza sobrevivir.";
+                FLAlertLayer::create(nullptr, "Registro de inputs", text, "OK", nullptr, 430.f, true, 260.f, 0.65f)->show();
+                return;
+            }
+            if (action == 10) {
+                Mod::get()->setSettingValue<bool>("white-flash", !Mod::get()->getSettingValue<bool>("white-flash"));
+                refresh();
+                return;
+            }
             if (action == 3) {
                 FLAlertLayer::create("Como funciona",
                     "Al <cy>pulsar o soltar</c>, compara tu trayectoria con retrasos de 1 hasta el limite de ticks. "
@@ -674,6 +804,10 @@ class $modify(AdaptivePlayLayer, PlayLayer) {
     void resetLevel() {
         if (m_fields->predictor) m_fields->predictor->clear();
         PlayLayer::resetLevel();
+        if (m_fields->predictor) {
+            ++m_fields->predictor->attempt;
+            m_fields->predictor->record("INICIO", 0, false, 0, "nuevo_intento");
+        }
     }
 
     void destroyPlayer(PlayerObject* player, GameObject* object) {
@@ -682,7 +816,10 @@ class $modify(AdaptivePlayLayer, PlayLayer) {
             pib::active->killedBy = object;
             return;
         }
-        if (m_fields->predictor) m_fields->predictor->clear();
+        if (m_fields->predictor) {
+            m_fields->predictor->record("MUERTE", 0, false, 0, "jugador_real");
+            m_fields->predictor->clear();
+        }
         PlayLayer::destroyPlayer(player, object);
     }
 
@@ -692,6 +829,10 @@ class $modify(AdaptivePlayLayer, PlayLayer) {
     }
 
     void onQuit() {
+        if (m_fields->predictor) {
+            m_fields->predictor->record("SALIDA", 0, false, 0, "fin_de_sesion");
+            m_fields->predictor->clear();
+        }
         if (pib::active == m_fields->predictor.get()) pib::active = nullptr;
         m_fields->predictor.reset();
         PlayLayer::onQuit();
@@ -763,15 +904,69 @@ class $modify(AdaptiveBaseLayer, GJBaseGameLayer) {
     }
 };
 
+// Capture the WHOLE native step before CBF splits it. The integration hook
+// below runs after CBF, seeing each real fraction with that original unit.
+class $modify(AdaptiveNativeClock, PlayerObject) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("PlayerObject::update", -2000000);
+    }
+    void update(float dt) {
+        auto* p = pib::active;
+        const bool real = p && !p->simulating && this == p->owner->m_player1 && dt > 0.f;
+        if (real) {
+            if (!p->outerDepth) p->step = dt;
+            ++p->outerDepth;
+        }
+        PlayerObject::update(dt);
+        if (real) --p->outerDepth;
+    }
+};
+
 class $modify(AdaptivePlayer, PlayerObject) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("PlayerObject::update", 2000000);
+    }
     void update(float dt) {
         auto* p = pib::active;
         const bool realStep = p && !p->simulating && dt > 0.f && this == p->owner->m_player1;
-        if (realStep) p->beforeStep(dt);
-        PlayerObject::update(dt);
-        // Increment AFTER the step: a one-tick delay must not fire before this
-        // step's physics, which would be an accidental zero-tick delay.
-        if (realStep) ++p->tick;
+        if (!realStep) { PlayerObject::update(dt); return; }
+        double remaining = static_cast<double>(dt) / p->step;
+        while (remaining > pib::core::timeEpsilon) {
+            p->beforeStep(dt);
+            const double span = p->pending.empty() ? remaining :
+                pib::core::span(p->tickTime, remaining, p->pending.front().tick);
+            if (span <= pib::core::timeEpsilon) break;
+            const float segment = static_cast<float>(span * p->step);
+            PlayerObject::update(segment);
+            if (m_isDead) return;
+            p->advance(span);
+            remaining -= span;
+            if (remaining > pib::core::timeEpsilon) {
+                p->owner->checkCollisions(this, m_isOnSlope ? p->step : 0.f, true);
+                if (m_isDead) return;
+                PlayerObject::updateRotation(segment);
+                m_collisionLogTop->removeAllObjects();
+                m_collisionLogBottom->removeAllObjects();
+                m_collisionLogLeft->removeAllObjects();
+                m_collisionLogRight->removeAllObjects();
+            }
+        }
+    }
+
+    bool pushButton(PlayerButton button) {
+        const bool result = PlayerObject::pushButton(button);
+        auto* p = pib::active;
+        if (p && !p->simulating && this == p->owner->m_player1 && button == PlayerButton::Jump)
+            p->record("BOTON_REAL", p->currentInputID, true, p->currentDelay, "pushButton");
+        return result;
+    }
+
+    bool releaseButton(PlayerButton button) {
+        const bool result = PlayerObject::releaseButton(button);
+        auto* p = pib::active;
+        if (p && !p->simulating && this == p->owner->m_player1 && button == PlayerButton::Jump)
+            p->record("BOTON_REAL", p->currentInputID, false, p->currentDelay, "releaseButton");
+        return result;
     }
 
     void incrementJumps() {
@@ -824,6 +1019,6 @@ class $modify(AdaptiveTrail, HardStreak) {
 };
 
 $on_mod(Loaded) {
-    log::info("[PIB] v4.9.1 loaded. Click {} ticks, release {} ticks. Shift+F12 opens settings; the indicator can be hidden.",
+    log::info("[PIB] v4.10.0 loaded. Click {} ticks, release {} ticks. Shift+F12 opens settings; the indicator can be hidden.",
         pib::limit(), pib::releaseLimit());
 }
